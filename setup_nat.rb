@@ -47,6 +47,7 @@ class NatSetup < MacRouterUtils::SetupBase
     skip_validation = @options[:uninstall] ||
                       @options[:list_static_mappings] ||
                       @options[:list_dhcp_leases] ||
+                      @options[:list_port_forwards] ||
                       @options[:status] ||
                       @options[:dns_stats] ||
                       @options[:flush_dns_cache]
@@ -65,6 +66,8 @@ class NatSetup < MacRouterUtils::SetupBase
     @options[:dns] ||= '1.1.1.1'
     @options[:add_static_mappings] ||= []
     @options[:remove_static_mappings] ||= []
+    @options[:add_port_forwards] ||= []
+    @options[:remove_port_forwards] ||= []
     @options[:dns_cache_size] ||= 10000
     @options[:dns_min_ttl] ||= 60
     @options[:dns_max_ttl] ||= 3600
@@ -202,6 +205,33 @@ class NatSetup < MacRouterUtils::SetupBase
   rescue StandardError => e
     logger.error "Failed to list static mappings: #{e.message}", exception: e
     exit(1)
+  end
+
+  def list_port_forwards
+    begin
+      port_forwards = pf_manager.list_port_forwards
+
+      if port_forwards.empty?
+        puts "\nNo port forwarding rules configured."
+        return
+      end
+
+      puts "\nCurrent Port Forwarding Rules:"
+      puts "============================"
+      puts "External Port | Protocol | Internal IP      | Internal Port"
+      puts "--------------------------------------------------------"
+
+      port_forwards.each do |rule|
+        puts sprintf("%-13s | %-8s | %-16s | %s",
+                    rule['external_port'],
+                    rule['protocol'],
+                    rule['internal_ip'],
+                    rule['internal_port'])
+      end
+    rescue StandardError => e
+      logger.error "Failed to list port forwards: #{e.message}", exception: e
+      exit(1)
+    end
   end
 
   def list_dhcp_leases
@@ -508,6 +538,37 @@ class NatSetup < MacRouterUtils::SetupBase
     )
   end
 
+  # Public method for accessing the pf manager
+  def pf_manager
+    # Extract subnet from static IP if needed
+    lan_subnet = if @options[:lan_subnet]
+                   @options[:lan_subnet]
+                 elsif @options[:static_ip]
+                   # Convert the static IP to a subnet using the first 3 octets + .0/24
+                   ip_parts = @options[:static_ip].split('.')
+                   "#{ip_parts[0]}.#{ip_parts[1]}.#{ip_parts[2]}.0/24"
+                 else
+                   '192.168.1.0/24'
+                 end
+
+    @pf_manager ||= MacRouterUtils::PFManager.new(
+      @options[:wan_interface],
+      @options[:lan_interface],
+      @options[:force],
+      lan_subnet
+    )
+  end
+
+  # Alias for pf_manager to ensure old code works
+  def sysctl_manager
+    @sysctl_manager ||= MacRouterUtils::SysctlManager.new
+  end
+
+  # Alias for interface_manager
+  def interface_manager
+    @interface_manager ||= MacRouterUtils::InterfaceManager.new(@options[:lan_interface], @options[:static_ip])
+  end
+
   private
 
   def validate_required_options!
@@ -715,58 +776,8 @@ class NatSetup < MacRouterUtils::SetupBase
     logger.info 'NAT service verification complete'
   end
 
-  def sysctl_manager
-    @sysctl_manager ||= MacRouterUtils::SysctlManager.new
-  end
-
-  def pf_manager
-    # Extract subnet from static IP if needed
-    lan_subnet = if @options[:lan_subnet]
-                   @options[:lan_subnet]
-                 elsif @options[:static_ip]
-                   # Convert the static IP to a subnet using the first 3 octets + .0/24
-                   ip_parts = @options[:static_ip].split('.')
-                   "#{ip_parts[0]}.#{ip_parts[1]}.#{ip_parts[2]}.0/24"
-                 else
-                   '192.168.1.0/24'
-                 end
-
-    @pf_manager ||= MacRouterUtils::PFManager.new(
-      @options[:wan_interface],
-      @options[:lan_interface],
-      @options[:force],
-      lan_subnet
-    )
-  end
-
-  def dnsmasq_manager
-    # Prepare DNS options hash
-    dns_options = {
-      cache_size: @options[:dns_cache_size],
-      min_ttl: @options[:dns_min_ttl],
-      max_ttl: @options[:dns_max_ttl]
-    }
-
-    # Add DNS servers if specified, otherwise use the primary DNS
-    dns_servers = @options[:dns_servers].empty? ? [@options[:dns]] : @options[:dns_servers]
-    dns_options[:dns_servers] = dns_servers
-
-    @dnsmasq_manager ||= MacRouterUtils::DNSMasqManager.new(
-      @options[:lan_interface],
-      @options[:static_ip],
-      @options[:dhcp_range],
-      @options[:domain],
-      @options[:dns],
-      @options[:add_static_mappings],
-      @options[:remove_static_mappings],
-      @options[:force],
-      dns_options
-    )
-  end
-
-  def interface_manager
-    @interface_manager ||= MacRouterUtils::InterfaceManager.new(@options[:lan_interface], @options[:static_ip])
-  end
+  # These methods are already defined as public methods above
+  # And are intentionally left empty to avoid duplication
 
   def execute_command_with_output(command)
     stdout, stderr, status = Open3.capture3(command)
@@ -786,14 +797,18 @@ class NatCLI < MacRouterUtils::CLIBase
       list_interfaces: false,
       list_static_mappings: false,
       list_dhcp_leases: false,
+      list_port_forwards: false,
       only_dhcp: false,
       only_nat: false,
       force: false,
       add_static_mappings: [],
       remove_static_mappings: [],
+      add_port_forwards: [],
+      remove_port_forwards: [],
       lan_subnet: nil,
       flush_dns_cache: false,
-      dns_stats: false
+      dns_stats: false,
+      fix_permissions: false
     })
   end
 
@@ -834,6 +849,25 @@ class NatCLI < MacRouterUtils::CLIBase
               'Format: AA:BB:CC:DD:EE:FF,name,192.168.100.50 or just MAC, name, or IP') do |v|
         @options[:remove_static_mappings] ||= []
         @options[:remove_static_mappings] << v
+      end
+
+      # Port forwarding options
+      opts.on('--add-port-forward MAPPING', 'Add port forwarding rule (can be used multiple times)',
+              'Format: external_port,internal_ip,internal_port[,protocol]',
+              'Example: 8080,192.168.100.10,80,tcp') do |v|
+        @options[:add_port_forwards] ||= []
+        @options[:add_port_forwards] << v
+      end
+
+      opts.on('--remove-port-forward PORT', 'Remove port forwarding rule by external port[,protocol]',
+              'Format: external_port[,protocol]',
+              'Example: 8080,tcp or just 8080 (defaults to tcp)') do |v|
+        @options[:remove_port_forwards] ||= []
+        @options[:remove_port_forwards] << v
+      end
+
+      opts.on('--list-port-forwards', 'List current port forwarding rules') do
+        @options[:list_port_forwards] = true
       end
 
       # Utility options
@@ -879,6 +913,74 @@ begin
 
   # Create NAT setup instance
   nat_setup = NatSetup.new(options)
+
+  # Handle port forwarding operations
+  if options[:add_port_forwards].any? || options[:remove_port_forwards].any? || options[:list_port_forwards]
+    # Ensure WAN interface is specified for port forwarding
+    unless options[:wan_interface]
+      logger.error("WAN interface (--wan-interface) is required for port forwarding operations")
+      exit(1)
+    end
+    if options[:list_port_forwards]
+      nat_setup.list_port_forwards
+    end
+
+    # Add and remove port forwards if needed
+    if options[:add_port_forwards].any? || options[:remove_port_forwards].any?
+      # Add port forwards
+      options[:add_port_forwards].each do |mapping|
+        parts = mapping.split(',')
+        if parts.size < 3 || parts.size > 4
+          puts "Error: Invalid port forward format: #{mapping}. Expected: external_port,internal_ip,internal_port[,protocol]"
+          next
+        end
+
+        external_port = parts[0]
+        internal_ip = parts[1]
+        internal_port = parts[2]
+        protocol = parts[3] || 'tcp'
+
+        begin
+          pf_manager = nat_setup.pf_manager
+          pf_manager.add_port_forward(external_port, internal_ip, internal_port, protocol)
+          puts "Added port forward: #{protocol} port #{external_port} -> #{internal_ip}:#{internal_port}"
+        rescue StandardError => e
+          puts "Error adding port forward: #{e.message}"
+        end
+      end
+
+      # Remove port forwards
+      options[:remove_port_forwards].each do |mapping|
+        parts = mapping.split(',')
+        if parts.empty? || parts.size > 2
+          puts "Error: Invalid format for port forward removal: #{mapping}. Expected: external_port[,protocol]"
+          next
+        end
+
+        external_port = parts[0]
+        protocol = parts[1] || 'tcp'
+
+        begin
+          pf_manager = nat_setup.pf_manager
+          if pf_manager.remove_port_forward(external_port, protocol)
+            puts "Removed port forward: #{protocol} port #{external_port}"
+          else
+            puts "No matching port forward found: #{protocol} port #{external_port}"
+          end
+        rescue StandardError => e
+          puts "Error removing port forward: #{e.message}"
+        end
+      end
+
+      # Show updated list after changes
+      nat_setup.list_port_forwards
+    end
+
+    # If we're only doing port forwarding operations and not setting up NAT
+    if !options[:status] && !options[:uninstall]
+      exit(0)
+    end
+  end
 
   # Run appropriate action based on options
   if options[:list_static_mappings]

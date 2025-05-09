@@ -6,6 +6,7 @@
 
 require_relative 'system_manager'
 require_relative 'template_renderer'
+require_relative 'port_forwards'
 
 module MacRouterUtils
   # Manages PF (Packet Filter) configuration
@@ -32,6 +33,25 @@ module MacRouterUtils
       validate_interface(@wan, 'WAN') if @wan
       validate_interface(@lan, 'LAN') if @lan
       validate_subnet(@subnet) if @subnet
+
+      # Initialize port forwards manager
+      @port_forwards = MacRouterUtils::PortForwards.new(@wan) if @wan
+    end
+
+    # Port forwarding methods
+    def add_port_forward(external_port, internal_ip, internal_port, protocol = 'tcp')
+      raise ConfigurationError, "WAN interface must be defined to add port forwards" unless @wan
+      @port_forwards.add_port_forward(external_port, internal_ip, internal_port, protocol)
+    end
+
+    def remove_port_forward(external_port, protocol = 'tcp')
+      raise ConfigurationError, "WAN interface must be defined to remove port forwards" unless @wan
+      @port_forwards.remove_port_forward(external_port, protocol)
+    end
+
+    def list_port_forwards
+      raise ConfigurationError, "WAN interface must be defined to list port forwards" unless @wan
+      @port_forwards.list_port_forwards
     end
 
     # Helper method to validate interface names
@@ -113,10 +133,16 @@ module MacRouterUtils
         logger.info "Ensuring PF is enabled..."
         enable_pf_if_needed
 
-        # Step 6: Create a LaunchDaemon to restore NAT at boot
+        # Step 6: Apply any port forwarding rules
+        if @wan && @port_forwards
+          logger.info "Applying port forwarding rules..."
+          @port_forwards.apply_port_forwards
+        end
+
+        # Step 7: Create a LaunchDaemon to restore NAT at boot
         create_nat_launch_daemon
 
-        # Step 7: Verify NAT configuration is active
+        # Step 8: Verify NAT configuration is active
         verify_nat_configuration
 
         logger.info 'Packet filtering (PF) configured for NAT successfully'

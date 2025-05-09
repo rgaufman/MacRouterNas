@@ -16,6 +16,16 @@ scrub out on <%= @wan_interface %> proto tcp all max-mss 1440
 
 # NAT rule for routing traffic
 nat on <%= @wan_interface %> from <%= @subnet %> to any -> (<%= @wan_interface %>)
+
+# Load port forwarding rules if they exist
+if [ -f "/opt/homebrew/etc/macrouternas/port_forwards.json" ]; then
+    echo "Loading port forwarding rules from /opt/homebrew/etc/macrouternas/port_forwards.json"
+    /sbin/pfctl -a com.macrouternas/portforwards -f /opt/homebrew/etc/macrouternas/port_forwards_rules.conf 2>/dev/null
+fi
+if [ -f "$HOME/.config/macrouternas/port_forwards.json" ]; then
+    echo "Loading port forwarding rules from $HOME/.config/macrouternas/port_forwards.json"
+    /sbin/pfctl -a com.macrouternas/portforwards -f $HOME/.config/macrouternas/port_forwards_rules.conf 2>/dev/null
+fi
 EOF
 
             # Wait 5 seconds for network interfaces to be ready
