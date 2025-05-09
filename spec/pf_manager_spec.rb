@@ -8,83 +8,85 @@ RSpec.describe MacRouterUtils::PFManager do
   let(:lan_interface) { 'en5' }
   let(:pf_manager) { described_class.new(wan_interface, lan_interface) }
 
-  describe '#generate_rules' do
+  # Mock the PortForwards class to avoid dependencies in tests
+  before(:each) do
+    port_forwards_mock = instance_double(MacRouterUtils::PortForwards)
+    allow(MacRouterUtils::PortForwards).to receive(:new).and_return(port_forwards_mock)
+    allow(port_forwards_mock).to receive(:add_port_forward).and_return(true)
+    allow(port_forwards_mock).to receive(:remove_port_forward).and_return(true)
+    allow(port_forwards_mock).to receive(:list_port_forwards).and_return([])
+  end
+
+  # Note: We no longer test the generate_rules method directly because it was removed
+  # in favor of a different approach that uses direct NAT rule loading
+  describe '#create_secure_nat_rule_file' do
     it 'generates NAT rules correctly' do
-      # Create a mock of the template engine that returns known output
-      renderer = instance_double(MacRouterUtils::TemplateRenderer)
-      allow(MacRouterUtils::TemplateRenderer).to receive(:new).and_return(renderer)
-      
-      # Mock the render method to return a predefined NAT configuration
-      expected_rules = <<~RULES
-      # MacRouterNas PF NAT Configuration
-      # For: en0 (WAN) and en5 (LAN)
-      # This file should be loaded into an anchor
+      # Mock the file operations
+      temp_file = instance_double(Tempfile)
+      allow(Tempfile).to receive(:new).and_return(temp_file)
+      allow(temp_file).to receive(:path).and_return('/tmp/mock_nat_rule.conf')
+      allow(temp_file).to receive(:close)
+      allow(File).to receive(:write)
+      allow(FileUtils).to receive(:chmod)
 
-      # Define interfaces
-      ext_if = "en0"
-      int_if = "en5"
+      # Call the private method with test input
+      nat_rule = "# NAT rule for testing\nnat on en0 from 192.168.1.0/24 to any -> (en0)"
+      result = pf_manager.send(:create_secure_nat_rule_file, nat_rule)
 
-      # NAT configuration
-      match out on $ext_if from $int_if:network to any nat-to ($ext_if)
-
-      # Pass rules for the NAT
-      pass out on $ext_if from $int_if:network to any
-      pass in on $int_if all
-      RULES
-      
-      allow(renderer).to receive(:render).with('pf_rules', {wan: wan_interface, lan: lan_interface}).and_return(expected_rules)
-      
-      # Call the private method
-      rules = pf_manager.send(:generate_rules)
-      
-      # Verify the rules contain the expected content
-      expect(rules).to include("ext_if = \"#{wan_interface}\"")
-      expect(rules).to include("int_if = \"#{lan_interface}\"")
-      expect(rules).to include("match out on $ext_if from $int_if:network to any nat-to ($ext_if)")
-      expect(rules).to include("pass out on $ext_if from $int_if:network to any")
-      expect(rules).to include("pass in on $int_if all")
+      # Verify the result
+      expect(result).to eq('/tmp/mock_nat_rule.conf')
+      expect(File).to have_received(:write).with('/tmp/mock_nat_rule.conf', nat_rule)
+      expect(FileUtils).to have_received(:chmod).with(0600, '/tmp/mock_nat_rule.conf')
     end
   end
 
-  describe '#generate_main_conf' do
-    it 'generates main PF configuration correctly' do
-      # Create a mock of the template engine that returns known output
+  # The generate_main_conf method has been removed in the updated implementation
+  # Let's test the create_nat_launch_daemon method instead since it's now used
+  describe '#create_nat_launch_daemon' do
+    before do
+      # Mock template renderer
       renderer = instance_double(MacRouterUtils::TemplateRenderer)
       allow(MacRouterUtils::TemplateRenderer).to receive(:new).and_return(renderer)
-      
-      # Mock the render method to return a predefined main PF configuration
-      expected_conf = <<~CONF
-      # MacRouterNas PF Main Configuration
-      # Generated on 2023-01-01 00:00:00 -0000
 
-      # Include system anchors
-      anchor "com.apple/*"
-      load anchor "com.apple" from "/etc/pf.anchors/com.apple"
+      # Mock the render method
+      allow(renderer).to receive(:render).with('nat_launchdaemon', {
+        wan_interface: wan_interface,
+        subnet: '192.168.1.0/24'
+      }).and_return("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n</plist>")
 
-      # MacRouterNas NAT anchor
-      anchor "com.macrouternas"
-      load anchor "com.macrouternas" from "/etc/pf.anchors/com.macrouternas"
-      CONF
-      
-      allow(renderer).to receive(:render).with('pf_main_conf', {
-        anchor_name: described_class::PF_ANCHOR_NAME,
-        anchor_file: described_class::PF_ANCHOR_FILE
-      }).and_return(expected_conf)
-      
-      # Call the private method
-      conf = pf_manager.send(:generate_main_conf)
-      
-      # Verify the configuration contains the expected content
-      expect(conf).to include('anchor "com.apple/*"')
-      expect(conf).to include('load anchor "com.apple" from "/etc/pf.anchors/com.apple"')
-      expect(conf).to include('anchor "com.macrouternas"')
-      expect(conf).to include('load anchor "com.macrouternas" from "/etc/pf.anchors/com.macrouternas"')
+      # Mock tempfile operations
+      temp_file = instance_double(Tempfile)
+      allow(Tempfile).to receive(:new).and_return(temp_file)
+      allow(temp_file).to receive(:path).and_return('/tmp/com.macrouternas.nat.plist')
+      allow(temp_file).to receive(:close)
+
+      # Mock file operations
+      allow(File).to receive(:write)
+      allow(FileUtils).to receive(:chmod)
+      allow(File).to receive(:exist?).and_return(false)
+
+      # Mock command executions
+      allow(pf_manager).to receive(:execute_command_with_output).and_return({success: true, stdout: '', stderr: ''})
+    end
+
+    it 'creates a launch daemon for NAT configuration' do
+      # Call the method
+      expect { pf_manager.send(:create_nat_launch_daemon) }.not_to raise_error
+
+      # We can check that our mocked renderer was called with correct params
+      expect(MacRouterUtils::TemplateRenderer).to have_received(:new)
     end
   end
 
   describe '#verify_interfaces' do
     context 'when checking a PPP WAN interface' do
       let(:ppp_manager) { described_class.new('ppp0', 'en5') }
+
+      # Mock the PortForwards class for the PPP manager
+      before(:each) do
+        port_forwards_mock = instance_double(MacRouterUtils::PortForwards)
+        allow(MacRouterUtils::PortForwards).to receive(:new).and_return(port_forwards_mock)
+      end
 
       it 'correctly identifies active PPP interface' do
         allow(ppp_manager).to receive(:execute_command_with_output).with("ifconfig ppp0").and_return({
@@ -97,11 +99,21 @@ RSpec.describe MacRouterUtils::PFManager do
           INTERFACE
         })
 
+        # Also mock ifconfig for LAN interface
+        allow(ppp_manager).to receive(:execute_command_with_output).with("ifconfig en5").and_return({
+          success: true,
+          stdout: "en5: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500"
+        })
+
         # Execute the private method
         expect { ppp_manager.send(:verify_interfaces) }.not_to raise_error
 
         # The method doesn't return a value, but it logs an info message for active PPP interfaces
-        expect_any_instance_of(SemanticLogger::Logger).to receive(:info).with(/PPP interface ppp0 is active/)
+        logger_double = instance_double(SemanticLogger::Logger)
+        allow(ppp_manager).to receive(:logger).and_return(logger_double)
+        allow(logger_double).to receive(:debug)
+        expect(logger_double).to receive(:info).with(/PPP interface ppp0 is active/)
+
         ppp_manager.send(:verify_interfaces)
       end
 
@@ -115,8 +127,18 @@ RSpec.describe MacRouterUtils::PFManager do
           INTERFACE
         })
 
+        # Also mock ifconfig for LAN interface
+        allow(ppp_manager).to receive(:execute_command_with_output).with("ifconfig en5").and_return({
+          success: true,
+          stdout: "en5: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500"
+        })
+
         # The method warns but doesn't error
-        expect_any_instance_of(SemanticLogger::Logger).to receive(:warn).with(/PPP interface ppp0 has RUNNING flag but no IP address/)
+        logger_double = instance_double(SemanticLogger::Logger)
+        allow(ppp_manager).to receive(:logger).and_return(logger_double)
+        allow(logger_double).to receive(:debug)
+        expect(logger_double).to receive(:warn).with(/PPP interface ppp0 has RUNNING flag but no IP address/)
+
         ppp_manager.send(:verify_interfaces)
       end
 
@@ -131,8 +153,18 @@ RSpec.describe MacRouterUtils::PFManager do
           INTERFACE
         })
 
+        # Also mock ifconfig for LAN interface
+        allow(ppp_manager).to receive(:execute_command_with_output).with("ifconfig en5").and_return({
+          success: true,
+          stdout: "en5: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500"
+        })
+
         # The method warns but doesn't error
-        expect_any_instance_of(SemanticLogger::Logger).to receive(:warn).with(/PPP interface ppp0 has IP address but RUNNING flag not set/)
+        logger_double = instance_double(SemanticLogger::Logger)
+        allow(ppp_manager).to receive(:logger).and_return(logger_double)
+        allow(logger_double).to receive(:debug)
+        expect(logger_double).to receive(:warn).with(/PPP interface ppp0 has IP address but RUNNING flag not set/)
+
         ppp_manager.send(:verify_interfaces)
       end
     end
@@ -147,11 +179,14 @@ RSpec.describe MacRouterUtils::PFManager do
           stdout: "Status: Enabled\nSome other PF info..."
         })
 
-        # Mock successful anchor check with our NAT rules
-        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -sa').and_return({
+        # Mock NAT rules check with new implementation
+        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
           success: true,
-          stdout: "... anchor \"com.macrouternas\" ... match out on en0 from en5:network to any nat-to (en0) ..."
+          stdout: "nat on en0 from 192.168.1.0/24 to any -> (en0)"
         })
+
+        # Since verify_running also calls the log when force mode is used
+        allow(pf_manager).to receive(:logger).and_return(double('logger').as_null_object)
       end
 
       it 'returns true' do
@@ -161,14 +196,53 @@ RSpec.describe MacRouterUtils::PFManager do
 
     context 'when PF is disabled' do
       before do
+        # Mock the logger
+        logger_double = double('logger')
+        allow(logger_double).to receive(:info)
+        allow(logger_double).to receive(:warn)
+        allow(pf_manager).to receive(:logger).and_return(logger_double)
+
+        # Mock force mode
+        allow(pf_manager).to receive(:instance_variable_get).with(any_args).and_call_original
+        allow(pf_manager).to receive(:instance_variable_get).with(:@force).and_return(true)
+
+        # Step 1: PF is disabled initially
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s info').and_return({
           success: true,
           stdout: "Status: Disabled\nSome other PF info..."
         })
+
+        # Step 2: Enable PF
+        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -e').and_return({
+          success: true,
+          stdout: "pf enabled"
+        })
+
+        # Step 3: Check NAT rules (empty)
+        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
+          success: true,
+          stdout: ""
+        })
+
+        # Step 4: Check if Internet Sharing is enabled (it's not)
+        allow(pf_manager).to receive(:execute_command_with_output).with('defaults read /Library/Preferences/SystemConfiguration/com.apple.nat | grep -i enabled').and_return({
+          success: true,
+          stdout: "Enabled = 0"
+        })
+
+        # Step 5: Check IP forwarding (it's not enabled)
+        allow(pf_manager).to receive(:execute_command_with_output).with('sysctl net.inet.ip.forwarding').and_return({
+          success: true,
+          stdout: "net.inet.ip.forwarding = 0"
+        })
       end
 
-      it 'returns false' do
+      it 'enables PF but returns false when NAT is not properly configured' do
+        # Even though we enable PF, it should still return false because NAT isn't configured
+        # and no rules were found - this is the actual current behavior
         expect(pf_manager.verify_running).to be false
+        # Verify the logger received the warning about NAT not being properly configured
+        expect(pf_manager.logger).to have_received(:warn).with('Could not verify NAT is properly configured')
       end
     end
 
@@ -180,15 +254,88 @@ RSpec.describe MacRouterUtils::PFManager do
           stdout: "Status: Enabled\nSome other PF info..."
         })
 
-        # Mock anchor check without our NAT rules
-        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -sa').and_return({
+        # Mock NAT rules check - empty NAT rules
+        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
           success: true,
-          stdout: "... other anchors but not ours ..."
+          stdout: ""
+        })
+
+        # Mock NAT rules check with grep - also empty
+        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s all | grep nat').and_return({
+          success: true,
+          stdout: ""
+        })
+
+        # Mock Internet Sharing check
+        allow(pf_manager).to receive(:execute_command_with_output).with('defaults read /Library/Preferences/SystemConfiguration/com.apple.nat | grep -i enabled').and_return({
+          success: true,
+          stdout: "Enabled = 0"
+        })
+
+        # For force mode check
+        allow(pf_manager).to receive(:instance_variable_get).with(:@force).and_return(false)
+
+        # Since verify_running also calls the log
+        allow(pf_manager).to receive(:logger).and_return(double('logger').as_null_object)
+
+        # For IP forwarding check
+        allow(pf_manager).to receive(:execute_command_with_output).with('sysctl net.inet.ip.forwarding').and_return({
+          success: true,
+          stdout: "net.inet.ip.forwarding: 0"
         })
       end
 
-      it 'returns false' do
+      it 'returns false if NAT is not configured and force mode is not enabled' do
         expect(pf_manager.verify_running).to be false
+      end
+    end
+  end
+
+  # Test port forwarding methods
+  describe 'port forwarding methods' do
+    let(:port_forwards_mock) { instance_double(MacRouterUtils::PortForwards) }
+
+    before(:each) do
+      allow(MacRouterUtils::PortForwards).to receive(:new).and_return(port_forwards_mock)
+    end
+
+    describe '#add_port_forward' do
+      it 'delegates to the PortForwards instance' do
+        expect(port_forwards_mock).to receive(:add_port_forward).with('8080', '192.168.1.10', '80', 'tcp')
+        pf_manager.add_port_forward('8080', '192.168.1.10', '80', 'tcp')
+      end
+
+      it 'raises an error if WAN interface is not defined' do
+        no_wan_pf_manager = described_class.new(nil, lan_interface)
+        expect { no_wan_pf_manager.add_port_forward('8080', '192.168.1.10', '80') }.to raise_error(MacRouterUtils::PFManager::ConfigurationError)
+      end
+    end
+
+    describe '#remove_port_forward' do
+      it 'delegates to the PortForwards instance' do
+        expect(port_forwards_mock).to receive(:remove_port_forward).with('8080', 'tcp')
+        pf_manager.remove_port_forward('8080', 'tcp')
+      end
+
+      it 'raises an error if WAN interface is not defined' do
+        no_wan_pf_manager = described_class.new(nil, lan_interface)
+        expect { no_wan_pf_manager.remove_port_forward('8080') }.to raise_error(MacRouterUtils::PFManager::ConfigurationError)
+      end
+    end
+
+    describe '#list_port_forwards' do
+      it 'delegates to the PortForwards instance' do
+        port_forwards = [
+          { 'external_port' => '8080', 'internal_ip' => '192.168.1.10', 'internal_port' => '80', 'protocol' => 'tcp' }
+        ]
+        expect(port_forwards_mock).to receive(:list_port_forwards).and_return(port_forwards)
+        result = pf_manager.list_port_forwards
+        expect(result).to eq(port_forwards)
+      end
+
+      it 'raises an error if WAN interface is not defined' do
+        no_wan_pf_manager = described_class.new(nil, lan_interface)
+        expect { no_wan_pf_manager.list_port_forwards }.to raise_error(MacRouterUtils::PFManager::ConfigurationError)
       end
     end
   end
@@ -201,39 +348,44 @@ RSpec.describe MacRouterUtils::PFManager do
         Debug: Urgent
         OUTPUT
       }
-      
-      let(:pfctl_anchor_output) {
-        <<~OUTPUT
-        anchor "com.apple/*" all
-        anchor "com.macrouternas" all
-          match out on en0 from en5:network to any nat-to (en0)
-          pass out on en0 from en5:network to any
-          pass in on en5 all
-        OUTPUT
+
+      let(:nat_rules_output) {
+        "nat on en0 from 192.168.1.0/24 to any -> (en0)"
       }
-      
+
       before do
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s info').and_return({
           success: true,
           stdout: pfctl_info_output
         })
-        
-        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -sa').and_return({
+
+        # New implementation checks different commands
+        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
           success: true,
-          stdout: pfctl_anchor_output
+          stdout: nat_rules_output
         })
-        
-        allow(File).to receive(:exist?).with(described_class::PF_ANCHOR_FILE).and_return(true)
+
+        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s all | grep nat').and_return({
+          success: true,
+          stdout: nat_rules_output
+        })
+
+        # Mock Internet Sharing check
+        allow(pf_manager).to receive(:execute_command_with_output).with('defaults read /Library/Preferences/SystemConfiguration/com.apple.nat | grep -i enabled').and_return({
+          success: true,
+          stdout: "Enabled = 0"
+        })
       end
-      
+
       it 'returns correct status information' do
         status = pf_manager.check_status
-        
+
         expect(status[:enabled]).to be true
         expect(status[:nat_configured]).to be true
         expect(status[:interfaces][:wan]).to eq('en0')
-        expect(status[:interfaces][:lan]).to eq('en5')
-        expect(status[:anchor]).to eq(described_class::PF_ANCHOR_FILE)
+        # The updated implementation gets subnet instead of lan
+        expect(status[:subnet]).to eq('192.168.1.0/24')
+        expect(status[:managed_by_us]).to be true
       end
     end
     
@@ -244,39 +396,43 @@ RSpec.describe MacRouterUtils::PFManager do
         Debug: Urgent
         OUTPUT
       }
-      
-      let(:pfctl_anchor_output) {
-        <<~OUTPUT
-        anchor "com.apple/*" all
-        anchor "com.macrouternas" all
-          nat on en0 from en5:network to any -> (en0)
-          pass out on en0 all
-          pass in on en5 all
-        OUTPUT
+
+      let(:nat_rules_output) {
+        "nat on en0 from 192.168.1.0/24 to any -> (en0)"
       }
-      
+
       before do
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s info').and_return({
           success: true,
           stdout: pfctl_info_output
         })
-        
-        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -sa').and_return({
+
+        # New implementation checks these commands
+        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
           success: true,
-          stdout: pfctl_anchor_output
+          stdout: nat_rules_output
         })
-        
-        allow(File).to receive(:exist?).with(described_class::PF_ANCHOR_FILE).and_return(true)
+
+        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s all | grep nat').and_return({
+          success: true,
+          stdout: nat_rules_output
+        })
+
+        # Mock Internet Sharing check
+        allow(pf_manager).to receive(:execute_command_with_output).with('defaults read /Library/Preferences/SystemConfiguration/com.apple.nat | grep -i enabled').and_return({
+          success: true,
+          stdout: "Enabled = 0"
+        })
       end
-      
+
       it 'returns correct status information with old nat syntax' do
         status = pf_manager.check_status
-        
+
         expect(status[:enabled]).to be true
         expect(status[:nat_configured]).to be true
         expect(status[:interfaces][:wan]).to eq('en0')
-        expect(status[:interfaces][:lan]).to eq('en5')
-        expect(status[:anchor]).to eq(described_class::PF_ANCHOR_FILE)
+        expect(status[:subnet]).to eq('192.168.1.0/24')
+        expect(status[:managed_by_us]).to be true
       end
     end
     
@@ -287,34 +443,37 @@ RSpec.describe MacRouterUtils::PFManager do
         Debug: Urgent
         OUTPUT
       }
-      
-      let(:pfctl_anchor_output) {
-        <<~OUTPUT
-        anchor "com.apple/*" all
-        OUTPUT
-      }
-      
+
       before do
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s info').and_return({
           success: true,
           stdout: pfctl_info_output
         })
-        
-        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -sa').and_return({
+
+        # No NAT rules found
+        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
           success: true,
-          stdout: pfctl_anchor_output
+          stdout: ""
         })
-        
-        allow(File).to receive(:exist?).with(described_class::PF_ANCHOR_FILE).and_return(false)
+
+        allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s all | grep nat').and_return({
+          success: true,
+          stdout: ""
+        })
+
+        # Internet Sharing is disabled
+        allow(pf_manager).to receive(:execute_command_with_output).with('defaults read /Library/Preferences/SystemConfiguration/com.apple.nat | grep -i enabled').and_return({
+          success: true,
+          stdout: "Enabled = 0"
+        })
       end
-      
+
       it 'returns status with NAT not configured' do
         status = pf_manager.check_status
-        
+
         expect(status[:enabled]).to be true
         expect(status[:nat_configured]).to be false
         expect(status[:interfaces]).to be_nil
-        expect(status[:anchor]).to be_nil
       end
     end
     
@@ -325,17 +484,17 @@ RSpec.describe MacRouterUtils::PFManager do
         DEBUG: Urgent
         OUTPUT
       }
-      
+
       before do
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s info').and_return({
           success: true,
           stdout: pfctl_info_output
         })
       end
-      
+
       it 'returns status with PF disabled' do
         status = pf_manager.check_status
-        
+
         expect(status[:enabled]).to be false
         expect(status[:nat_configured]).to be false
       end

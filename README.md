@@ -199,3 +199,12 @@ You can specify which sources to use with the `--sources` option when running `u
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+# Plex Setup
+```
+$ brew install plex-media-server
+$ open /Applications/Plex\ Media\ Server.app # follow the on screen instructions
+
+# e.g. to allow remote access
+$ ./setup_nat.rb --wan-interface ppp0 --lan-interface en8 --add-port-forward 32400,192.168.1.1,32400,tcp
+```
