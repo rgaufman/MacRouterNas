@@ -1,0 +1,10 @@
+# MacRouterNas PF Main Configuration
+# Generated on <%= Time.now %>
+
+# Include system anchors
+anchor "com.apple/*"
+load anchor "com.apple" from "/etc/pf.anchors/com.apple"
+
+# MacRouterNas NAT anchor
+anchor "<%= @anchor_name %>"
+load anchor "<%= @anchor_name %>" from "<%= @anchor_file %>"

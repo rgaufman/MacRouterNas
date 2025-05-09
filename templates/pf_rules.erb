@@ -1,0 +1,15 @@
+# MacRouterNas PF NAT Configuration
+# For: <%= @wan %> (WAN) and <%= @lan %> (LAN)
+# This file should be loaded into an anchor
+
+# Define interfaces
+ext_if="<%= @wan %>"
+int_if="<%= @lan %>"
+lan_net="<%= @lan_network %>"
+
+# NAT configuration - using correct syntax for macOS
+nat on $ext_if from $lan_net to any -> ($ext_if:0)
+
+# Pass rules for the NAT
+pass out on $ext_if all
+pass in on $int_if all

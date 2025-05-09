@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.macrouternas.nat</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>
+            # Create NAT rule file with MSS clamping for PPP interfaces
+            cat > /tmp/nat_rule << 'EOF'
+# TCP MSS clamping to fix issues with PPP and HTTPS connections
+scrub out on <%= @wan_interface %> proto tcp all max-mss 1440
+
+# NAT rule for routing traffic
+nat on <%= @wan_interface %> from <%= @subnet %> to any -> (<%= @wan_interface %>)
+EOF
+
+            # Wait 5 seconds for network interfaces to be ready
+            sleep 5
+
+            # Enable PF if not already enabled
+            /sbin/pfctl -e || true
+
+            # Flush any existing NAT rules
+            /sbin/pfctl -F nat
+
+            # Load NAT rule
+            /sbin/pfctl -f /tmp/nat_rule
+        </string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardErrorPath</key>
+    <string>/var/log/macrouternas-nat.log</string>
+    <key>StandardOutPath</key>
+    <string>/var/log/macrouternas-nat.log</string>
+</dict>
+</plist>

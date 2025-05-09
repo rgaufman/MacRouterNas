@@ -1,0 +1,31 @@
+{
+<% if @plain_http %>
+  auto_https off
+<% end %>
+}
+
+<%= @site_block_name %> {
+<% if @tls_line && !@tls_line.empty? %>
+  <%= @tls_line %>
+<% end %>
+  log {
+    output file <%= @access_log_path %>
+    format console
+  }
+
+  handle_errors {
+    respond "Error {http.error.status_code} {http.error.status_text}" {http.error.status_code}
+  }
+
+  handle_path /seafhttp/* {
+    reverse_proxy localhost:8082
+  }
+
+  handle {
+    reverse_proxy localhost:8080 {
+      header_up Host {host}
+      header_up X-Real-IP {remote_host}
+      header_up X-Forwarded-Proto <%= @proto %>
+    }
+  }
+}

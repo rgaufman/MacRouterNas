@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.macrouternas.ipforwarding</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>
+            # Enable IP forwarding and verify it's enabled
+            /usr/sbin/sysctl -w net.inet.ip.forwarding=1
+
+            # Verify it's enabled
+            if [ $(/usr/sbin/sysctl -n net.inet.ip.forwarding) -ne 1 ]; then
+                echo "$(date): ERROR - Failed to enable IP forwarding!"
+                exit 1
+            fi
+
+            echo "$(date): Successfully enabled IP forwarding"
+
+            # Don't exit - stay running briefly to ensure settings have time to take effect
+            sleep 2
+        </string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardErrorPath</key>
+    <string>/var/log/macrouternas-ipforwarding.log</string>
+    <key>StandardOutPath</key>
+    <string>/var/log/macrouternas-ipforwarding.log</string>
+    <!-- Run every 5 minutes to ensure IP forwarding stays enabled -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+</dict>
+</plist>

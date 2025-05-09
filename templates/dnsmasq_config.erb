@@ -1,0 +1,47 @@
+interface=<%= @lan %>
+dhcp-range=<%= @dhcp_range %>
+domain=<%= @domain %>
+listen-address=127.0.0.1
+listen-address=<%= @ip %>
+# Store DHCP leases in a more accessible location
+dhcp-leasefile=/opt/homebrew/var/lib/misc/dnsmasq.leases
+# Log DHCP queries and other activity to a dedicated log file
+log-facility=/opt/homebrew/var/log/dnsmasq.log
+log-queries
+log-dhcp
+
+# DNS Caching Configuration
+cache-size=<%= @cache_size || 1000 %>
+min-cache-ttl=<%= @min_ttl || 60 %>
+max-ttl=<%= @max_ttl || 3600 %>
+# no-resolv is commented out to allow fallback to system resolvers if needed
+# Use specified upstream DNS servers
+resolv-file=<%= @resolv_file || '/etc/resolv.dnsmasq' %>
+# Allow DNS queries from all sources - this fixes the REFUSED error
+# bind-interfaces is commented out to allow clients to connect to the DNS server
+# bind-interfaces
+
+# DNS Security Options - Using safer, more permissive defaults
+# Allow all DNS queries
+# Uncomment these for tighter security if needed
+# domain-needed
+# bogus-priv
+# stop-dns-rebind
+# Expand simple hostnames in the same domain
+expand-hosts
+# Use the hosts file for local hostnames
+addn-hosts=/etc/hosts
+
+# Load blacklist for ads, tracking, and spam domains
+# Using a fixed path that won't change with directory structure
+conf-file=/opt/homebrew/etc/dnsmasq.blacklist
+
+# Set DNS server for DHCP clients to our router's IP
+# Option 6 is for DNS server
+dhcp-option=option:dns-server,<%= @ip %>
+
+<% if @static_mappings && !@static_mappings.empty? %>
+<% @static_mappings.each do |mapping| %>
+dhcp-host=<%= mapping %>
+<% end %>
+<% end %>
