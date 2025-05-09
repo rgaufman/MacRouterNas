@@ -50,8 +50,14 @@ The `--dhcp-range` parameter accepts values in the format `start_ip,end_ip,lease
 # List all static MAC to IP mappings
 ./setup_nat.rb --list-static-mappings
 
-# Remove a static mapping
+# Remove a static mapping by MAC address
 ./setup_nat.rb --remove-static-mapping AA:BB:CC:DD:EE:FF
+
+# Remove a static mapping by device name
+./setup_nat.rb --remove-static-mapping device1
+
+# Remove a static mapping by IP address
+./setup_nat.rb --remove-static-mapping 192.168.100.50
 ```
 
 ### Managing Port Forwarding
@@ -60,16 +66,26 @@ Port forwarding allows you to redirect traffic from your WAN interface to intern
 
 ```bash
 # Add a port forward (external_port,internal_ip,internal_port[,protocol])
+# Protocol is optional and defaults to tcp if not specified
 ./setup_nat.rb --wan-interface ppp0 --add-port-forward 8080,192.168.100.10,80,tcp
 
 # Add a port forward with UDP protocol
 ./setup_nat.rb --wan-interface ppp0 --add-port-forward 53,192.168.100.53,53,udp
 
+# For both TCP and UDP on the same port, use the 'both' protocol option
+./setup_nat.rb --wan-interface ppp0 --add-port-forward 8080,192.168.100.10,80,both
+
 # List all configured port forwards
 ./setup_nat.rb --wan-interface ppp0 --list-port-forwards
 
-# Remove a port forward
+# Remove a port forward (defaults to tcp if protocol not specified)
 ./setup_nat.rb --wan-interface ppp0 --remove-port-forward 8080
+
+# Remove a UDP port forward
+./setup_nat.rb --wan-interface ppp0 --remove-port-forward 8080,udp
+
+# Remove both TCP and UDP port forwards for a port
+./setup_nat.rb --wan-interface ppp0 --remove-port-forward 8080,both
 ```
 
 Port forwarding can also be used to enable remote access to services like Plex:

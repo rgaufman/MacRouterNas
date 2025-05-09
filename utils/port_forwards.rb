@@ -35,9 +35,27 @@ module MacRouterUtils
       validate_port(internal_port)
       validate_protocol(protocol)
 
+      # Special handling for 'both' protocol
+      if protocol.downcase == 'both'
+        # Add both TCP and UDP rules
+        ['tcp', 'udp'].each do |single_protocol|
+          add_single_protocol_forward(port_forwards, external_port, internal_ip, internal_port, single_protocol)
+        end
+        logger.info "Added port forwarding rule for both TCP and UDP: #{external_port} -> #{internal_ip}:#{internal_port}"
+      else
+        # Add a single protocol rule
+        add_single_protocol_forward(port_forwards, external_port, internal_ip, internal_port, protocol)
+      end
+
+      save_port_forwards(port_forwards)
+      apply_port_forwards
+    end
+
+    # Helper to add a single protocol rule
+    def add_single_protocol_forward(port_forwards, external_port, internal_ip, internal_port, protocol)
       # Check if a rule with the same external port and protocol already exists
       existing_rule_index = port_forwards.find_index { |r| r['external_port'] == external_port && r['protocol'] == protocol }
-      
+
       if existing_rule_index
         # If we're updating an existing rule, replace it
         port_forwards[existing_rule_index] = {
@@ -57,9 +75,6 @@ module MacRouterUtils
         }
         logger.info "Added port forwarding rule: #{protocol} #{external_port} -> #{internal_ip}:#{internal_port}"
       end
-
-      save_port_forwards(port_forwards)
-      apply_port_forwards
     end
 
     # Remove a port forwarding rule
@@ -70,14 +85,40 @@ module MacRouterUtils
       validate_port(external_port)
       validate_protocol(protocol)
 
-      # Check if a rule with the specified external port and protocol exists
+      # Special handling for 'both' protocol
+      if protocol.downcase == 'both'
+        # Remove both TCP and UDP rules
+        tcp_removed = remove_single_protocol_forward(port_forwards, external_port, 'tcp')
+        udp_removed = remove_single_protocol_forward(port_forwards, external_port, 'udp')
+
+        if tcp_removed || udp_removed
+          logger.info "Removed port forwarding rule(s) for both TCP and UDP: #{external_port}"
+          save_port_forwards(port_forwards)
+          apply_port_forwards
+          return true
+        else
+          logger.warn "No port forwarding rules found for TCP or UDP on port #{external_port}"
+          return false
+        end
+      else
+        # Remove a single protocol rule
+        if remove_single_protocol_forward(port_forwards, external_port, protocol)
+          save_port_forwards(port_forwards)
+          apply_port_forwards
+          return true
+        else
+          return false
+        end
+      end
+    end
+
+    # Helper to remove a single protocol rule
+    def remove_single_protocol_forward(port_forwards, external_port, protocol)
       original_count = port_forwards.length
       port_forwards.reject! { |r| r['external_port'] == external_port && r['protocol'] == protocol }
-      
+
       if port_forwards.length < original_count
         logger.info "Removed port forwarding rule: #{protocol} #{external_port}"
-        save_port_forwards(port_forwards)
-        apply_port_forwards
         return true
       else
         logger.warn "No port forwarding rule found for #{protocol} #{external_port}"
@@ -260,8 +301,8 @@ module MacRouterUtils
     end
 
     def validate_protocol(protocol)
-      unless %w[tcp udp].include?(protocol.downcase)
-        raise PortForwardError, "Invalid protocol: #{protocol}. Must be 'tcp' or 'udp'"
+      unless %w[tcp udp both].include?(protocol.downcase)
+        raise PortForwardError, "Invalid protocol: #{protocol}. Must be 'tcp', 'udp', or 'both'"
       end
     end
   end
