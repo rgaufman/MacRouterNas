@@ -11,6 +11,19 @@ A collection of Ruby utilities for setting up macOS as a router and NAS.
 - **Static IP Mappings**: Easily add and remove static MAC to IP mappings
 - **Caddy Server**: Set up Caddy as a reverse proxy for services like Seafile
 
+## Todo
+
+- **DynDNS & LetsEncrypt**: add support for getting a hostname and generating https certificates for it
+- **Complete persistance**: the challenge is with PPPoE, the connection is initiated on login
+- **Blacklist Auto-update**: Implemented but not yet tested
+- **ZFS NAS**: Add support for setting up a NAS with ZFS (beyond just filesystem sharing)
+- **UPnP**: Hacked miniupnpd to work on latest MacOS with Apple Silicon, but not well tested
+- **IoT/Homekit**: Pick a dashboard / integration for smart home management
+- **VPN Server**: Automate setup of OpenVPN and WireGuard
+- **Immich**: Automate setup of Imich (Synology Photos replacement)
+* **Seafile**: Automate setup of Seafile (Synology Drive replacement)
+* **Incremental Backups**: Automate setup of Borg + Vorta or Duplicacy Web
+
 ## Installation
 
 1. Clone the repository:

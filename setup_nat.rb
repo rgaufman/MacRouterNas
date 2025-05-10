@@ -26,8 +26,8 @@
 #   ./setup_nat.rb --list-interfaces                        # List available network interfaces
 #   ./setup_nat.rb --list-static-mappings                   # List current static MAC to IP mappings
 #   ./setup_nat.rb --status                                 # Show current NAT setup status
-#   ./setup_nat.rb --wan-interface en0 --lan-interface en5  # Basic setup
-#   ./setup_nat.rb --only-dhcp --lan-interface en5          # Setup only DHCP server without NAT
+#   ./setup_nat.rb --wan-interface ppp0 --lan-interface en8  # Basic setup
+#   ./setup_nat.rb --only-dhcp --lan-interface en8          # Setup only DHCP server without NAT
 #   ./setup_nat.rb --uninstall                              # Remove NAT configuration
 
 require_relative 'utils'
@@ -60,8 +60,8 @@ class NatSetup < MacRouterUtils::SetupBase
     validate_required_options! unless skip_validation
 
     # Set default values for optional parameters
-    @options[:static_ip] ||= '192.168.100.1'
-    @options[:dhcp_range] ||= '192.168.100.10,192.168.100.100,12h'
+    @options[:static_ip] ||= '192.168.1.1'
+    @options[:dhcp_range] ||= '192.168.1.11,192.168.1.249,4h'
     @options[:domain] ||= 'local'
     @options[:dns] ||= '1.1.1.1'
     @options[:add_static_mappings] ||= []
@@ -191,6 +191,10 @@ class NatSetup < MacRouterUtils::SetupBase
         dnsmasq_manager.uninstall
         pf_manager.uninstall
         sysctl_manager.uninstall
+
+        # Final cleanup - remove the persistent config directory
+        # Use the method from pf_manager to ensure it's fully removed
+        pf_manager.send(:remove_persistent_config_dir) if pf_manager.respond_to?(:remove_persistent_config_dir, true)
 
         logger.info 'Full NAT uninstallation complete.'
       rescue StandardError => e
@@ -816,12 +820,12 @@ class NatCLI < MacRouterUtils::CLIBase
     OptionParser.new do |opts|
       opts.banner = 'Usage: setup_nat.rb [options]'
 
-      opts.on('--wan-interface NAME', 'WAN interface (e.g., en0)') { |v| @options[:wan_interface] = v }
-      opts.on('--lan-interface NAME', 'LAN interface (e.g., en5)') { |v| @options[:lan_interface] = v }
+      opts.on('--wan-interface NAME', 'WAN interface (e.g., ppp0)') { |v| @options[:wan_interface] = v }
+      opts.on('--lan-interface NAME', 'LAN interface (e.g., en8)') { |v| @options[:lan_interface] = v }
       opts.on('--static-ip IP', 'Static IP for LAN interface') { |v| @options[:static_ip] = v }
       opts.on('--lan-subnet SUBNET', 'LAN subnet in CIDR notation (e.g., 192.168.1.0/24)') { |v| @options[:lan_subnet] = v }
       opts.on('--dhcp-range RANGE', 'DHCP range in format "start,end,lease_time"',
-              'Example: 192.168.1.11,192.168.1.249,4h',
+              'Example: 192.168.1.11,192.168.1.249,4h', # This is the default
               'Lease time can be in seconds or with a suffix: m (minutes), h (hours), d (days)') do |v|
         @options[:dhcp_range] = v
       end
@@ -840,13 +844,13 @@ class NatCLI < MacRouterUtils::CLIBase
 
       # Static mapping options
       opts.on('--add-static-mapping MAPPING', 'Add static MAC to IP mapping (can be used multiple times)',
-              'Format: AA:BB:CC:DD:EE:FF,name,192.168.100.50') do |v|
+              'Format: AA:BB:CC:DD:EE:FF,name,192.168.1.50') do |v|
         @options[:add_static_mappings] ||= []
         @options[:add_static_mappings] << v
       end
 
       opts.on('--remove-static-mapping MAPPING', 'Remove static mapping by full mapping, MAC, name, or IP',
-              'Format: AA:BB:CC:DD:EE:FF,name,192.168.100.50 or just MAC, name, or IP') do |v|
+              'Format: AA:BB:CC:DD:EE:FF,name,192.168.1.50 or just MAC, name, or IP') do |v|
         @options[:remove_static_mappings] ||= []
         @options[:remove_static_mappings] << v
       end
@@ -854,7 +858,7 @@ class NatCLI < MacRouterUtils::CLIBase
       # Port forwarding options
       opts.on('--add-port-forward MAPPING', 'Add port forwarding rule (can be used multiple times)',
               'Format: external_port,internal_ip,internal_port[,protocol]',
-              'Example: 8080,192.168.100.10,80,tcp') do |v|
+              'Example: 8080,192.168.1.10,80,tcp') do |v|
         @options[:add_port_forwards] ||= []
         @options[:add_port_forwards] << v
       end
@@ -992,7 +996,7 @@ begin
     dns_manager = MacRouterUtils::DNSMasqManager.new(
       'en8',  # Default LAN interface
       '192.168.1.1',  # Default IP
-      '192.168.1.10,192.168.1.100,12h',  # Default range
+      '192.168.1.11,192.168.1.249,4h',  # Default range
       'local',  # Default domain
       '1.1.1.1',  # Default DNS
       [],  # No static mappings
@@ -1010,7 +1014,7 @@ begin
     dns_manager = MacRouterUtils::DNSMasqManager.new(
       'en8',  # Default LAN interface
       '192.168.1.1',  # Default IP
-      '192.168.1.10,192.168.1.100,12h',  # Default range
+      '192.168.1.11,192.168.1.249,4h',  # Default range
       'local',  # Default domain
       '1.1.1.1',  # Default DNS
       [],  # No static mappings
