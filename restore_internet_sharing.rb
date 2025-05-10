@@ -32,8 +32,8 @@ class InternetSharingRestorer
     end
     
     # Set default values
-    @options[:static_ip] ||= '192.168.100.1'
-    @options[:subnet] ||= '192.168.100.0/24'
+    @options[:static_ip] ||= '192.168.1.1'
+    @options[:subnet] ||= '192.168.1.0/24'
   end
   
   def run
@@ -231,8 +231,8 @@ OptionParser.new do |opts|
   
   opts.on('--wan-interface NAME', 'WAN interface (e.g., en0)') { |v| options[:wan_interface] = v }
   opts.on('--lan-interface NAME', 'LAN interface (e.g., en5)') { |v| options[:lan_interface] = v }
-  opts.on('--static-ip IP', 'Static IP for LAN interface (default: 192.168.100.1)') { |v| options[:static_ip] = v }
-  opts.on('--subnet SUBNET', 'LAN subnet in CIDR notation (default: 192.168.100.0/24)') { |v| options[:subnet] = v }
+  opts.on('--static-ip IP', 'Static IP for LAN interface (default: 192.168.1.1)') { |v| options[:static_ip] = v }
+  opts.on('--subnet SUBNET', 'LAN subnet in CIDR notation (default: 192.168.1.0/24)') { |v| options[:subnet] = v }
   opts.on('--enable-dhcp', 'Restore DHCP server as well (uses dnsmasq)') { options[:dhcp] = true }
   opts.on('--verbose', 'Enable verbose output') { options[:verbose] = true }
   opts.on('-h', '--help', 'Display this help') do

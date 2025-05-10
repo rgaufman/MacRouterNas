@@ -48,11 +48,18 @@ RSpec.describe MacRouterUtils::PFManager do
       renderer = instance_double(MacRouterUtils::TemplateRenderer)
       allow(MacRouterUtils::TemplateRenderer).to receive(:new).and_return(renderer)
 
-      # Mock the render method
-      allow(renderer).to receive(:render).with('nat_launchdaemon', {
+      # Mock the render method (with the updated parameters)
+      allow(renderer).to receive(:render).with('nat_launchdaemon', hash_including({
         wan_interface: wan_interface,
-        subnet: '192.168.1.0/24'
-      }).and_return("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n</plist>")
+        subnet: '192.168.1.0/24',
+        port_forwards: []
+      })).and_return("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n</plist>")
+
+      # Mock the MSS clamping rule render
+      allow(renderer).to receive(:render).with('mss_clamping_rule', anything).and_return("scrub out on en0 proto tcp all max-mss 1452\n")
+
+      # Mock store_in_persistent_location to avoid issues with that method
+      allow(pf_manager).to receive(:store_in_persistent_location).and_return('/usr/local/etc/MacRouterNas/test_file.conf')
 
       # Mock tempfile operations
       temp_file = instance_double(Tempfile)
@@ -65,7 +72,12 @@ RSpec.describe MacRouterUtils::PFManager do
       allow(FileUtils).to receive(:chmod)
       allow(File).to receive(:exist?).and_return(false)
 
-      # Mock command executions
+      # Mock the mkdir command
+      allow(pf_manager).to receive(:execute_command_with_output).with("sudo mkdir -p /Library/LaunchDaemons").and_return(
+        {success: true, stdout: '', stderr: ''}
+      )
+
+      # Mock other command executions
       allow(pf_manager).to receive(:execute_command_with_output).and_return({success: true, stdout: '', stderr: ''})
     end
 
@@ -73,7 +85,7 @@ RSpec.describe MacRouterUtils::PFManager do
       # Call the method
       expect { pf_manager.send(:create_nat_launch_daemon) }.not_to raise_error
 
-      # We can check that our mocked renderer was called with correct params
+      # We can check that our mocked renderer was called
       expect(MacRouterUtils::TemplateRenderer).to have_received(:new)
     end
   end
@@ -183,6 +195,13 @@ RSpec.describe MacRouterUtils::PFManager do
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
           success: true,
           stdout: "nat on en0 from 192.168.1.0/24 to any -> (en0)"
+        })
+
+        # Mock the scrub rule check (MSS clamping)
+        allow(pf_manager).to receive(:execute_command_with_output).with("sudo pfctl -sa | grep -i 'max-mss'").and_return({
+          success: true,
+          stdout: "scrub out on en0 proto tcp all max-mss 1452",
+          stderr: ""
         })
 
         # Since verify_running also calls the log when force mode is used

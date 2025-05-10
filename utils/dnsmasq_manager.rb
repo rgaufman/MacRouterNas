@@ -256,131 +256,136 @@ module MacRouterUtils
 
       # Step 1: Check if dnsmasq process is running (most reliable method)
       process_check = execute_command_with_output('pgrep -l dnsmasq')
+
+      # If we find a dnsmasq process, that's the most reliable indicator it's running
+      process_running = process_check[:success] && !process_check[:stdout].empty?
+      if process_running
+        # Found dnsmasq process - confirm the PID for logging
+        pid = process_check[:stdout].split.first.strip rescue "unknown"
+        logger.info "✅ DNSMASQ process found with PID #{pid}"
+        return true
+      end
+
+      # No dnsmasq process was found - perform more detailed checks
       more_detailed_process = execute_command_with_output('ps aux | grep dnsmasq | grep -v grep')
 
-      # Step 2: Check for any process listening on DHCP port 67
+      # Double-check with the more detailed process search
+      detailed_process_running = more_detailed_process[:success] && !more_detailed_process[:stdout].empty?
+      if detailed_process_running && more_detailed_process[:stdout].include?('dnsmasq')
+        logger.info "✅ DNSMASQ process found with detailed search"
+        return true
+      end
+
+      # Step 2: Check if any process is listening on DHCP port 67
       port_check = execute_command_with_output('sudo lsof -i :67')
       dhcp_listener = port_check[:success] && !port_check[:stdout].empty?
+
+      # Check if it's our dnsmasq using port 67
+      if dhcp_listener && port_check[:stdout].include?('dnsmasq')
+        logger.info "✅ DNSMASQ is using port 67 (DHCP port)"
+        return true
+      elsif dhcp_listener
+        # Some other process is using port 67
+        process_name = "unknown"
+        if port_check[:stdout].match(/\n(\S+)\s+\d+/)
+          process_name = $1
+        end
+        logger.warn "⚠️ Port 67 is in use by another process: #{process_name}"
+        logger.warn "This conflicts with DNSMASQ's DHCP functionality"
+      end
 
       # Step 3: Check various service registrations
       homebrew_service_check = execute_command_with_output('sudo brew services list | grep dnsmasq')
       custom_service_check = execute_command_with_output('sudo launchctl list | grep custom.dnsmasq')
       launchdaemon_check = execute_command_with_output('ls -la /Library/LaunchDaemons/*dnsmasq*')
 
-      # Process must be running, and at least one service should be active
+      # Check if any service shows as active
       homebrew_service_active = homebrew_service_check[:success] && homebrew_service_check[:stdout].include?('started')
       custom_service_active = custom_service_check[:success]
 
-      # Either the process is running or a DHCP server is listening on port 67
-      process_running = process_check[:success] && !process_check[:stdout].empty?
-      is_running = process_running || (dhcp_listener && port_check[:stdout].include?('dnsmasq'))
+      # Final determination: dnsmasq is not running
+      logger.warn "❌ DNSMASQ process is not running"
 
-      if is_running
-        logger.info "✅ DNSMASQ service is running properly"
-        if process_running
-          logger.info "   - Process found: #{process_check[:stdout]}"
-        end
-        if dhcp_listener && port_check[:stdout].include?('dnsmasq')
-          logger.info "   - DNSMASQ listening on DHCP port 67"
-        end
+      # Return false - DNSMASQ is not running
+      false
+    end
+    
+    # Detailed diagnostics method
+    def detailed_diagnostics(process_running, process_check, more_detailed_process, dhcp_listener, port_check,
+                           homebrew_service_active, homebrew_service_check, custom_service_active,
+                           custom_service_check, launchdaemon_check, is_running)
+      logger.warn "Process check: #{process_running ? 'Passed' : 'Failed'} - #{process_check[:stdout]}"
+      if more_detailed_process[:success] && !more_detailed_process[:stdout].empty?
+        logger.warn "Process details: #{more_detailed_process[:stdout]}"
+      end
+
+      logger.warn "Port 67 usage: #{dhcp_listener ? 'Something is using DHCP port' : 'No DHCP service detected'}"
+      if dhcp_listener
+        logger.warn "Port 67 details: #{port_check[:stdout]}"
+      end
+
+      logger.warn "Homebrew service check: #{homebrew_service_active ? 'Passed' : 'Failed'} - #{homebrew_service_check[:stdout]}"
+      logger.warn "Custom service check: #{custom_service_active ? 'Passed' : 'Failed'} - #{custom_service_check[:stdout]}"
+      logger.warn "LaunchDaemon files: #{launchdaemon_check[:stdout]}"
+
+      # Step 5: Check configuration
+      if File.exist?(DNSMASQ_CONF)
+        config_check = execute_command_with_output("cat #{DNSMASQ_CONF} | grep -v '^#' | grep -v '^$'")
+        logger.warn "Config file exists: Yes"
+        logger.warn "Config content (excluding comments):"
+        logger.warn config_check[:stdout]
+
+        # Check permissions
+        perm_check = execute_command_with_output("ls -la #{DNSMASQ_CONF}")
+        logger.warn "Config permissions: #{perm_check[:stdout]}"
       else
-        # Check if this is a first-time run (when the config file doesn't exist)
-        first_run = !File.exist?(DNSMASQ_CONF)
+        logger.warn "Config file exists: No - Config file is missing!"
+      end
 
-        if first_run
-          # For first runs, just provide info-level messages since this is expected
-          logger.info "ℹ️ DNSMASQ service not yet configured (first run)"
+      # Step 6: Check executable
+      bin_check = execute_command_with_output("ls -la /opt/homebrew/sbin/dnsmasq")
+      logger.warn "DNSMASQ binary: #{bin_check[:success] ? bin_check[:stdout] : 'Not found!'}"
 
-          # Step 4: Detailed diagnostics (info level for first run)
-          logger.info "Process check: #{process_running ? 'Passed' : 'Not found'} - #{process_check[:stdout]}"
+      # Step 7: Check logs
+      if File.exist?('/tmp/dnsmasq.stderr')
+        stderr = File.read('/tmp/dnsmasq.stderr').strip
+        logger.warn "Custom DNSMASQ stderr: #{stderr.empty? ? 'Empty file' : stderr}"
+      else
+        logger.warn "Custom DNSMASQ stderr: File doesn't exist"
+      end
 
-          logger.info "Port 67 usage: #{dhcp_listener ? 'Something is using DHCP port' : 'No DHCP service detected'}"
-          if dhcp_listener
-            logger.info "Port 67 details: #{port_check[:stdout]}"
-          end
+      if File.exist?('/tmp/dnsmasq.stdout')
+        stdout = File.read('/tmp/dnsmasq.stdout').strip
+        logger.warn "Custom DNSMASQ stdout: #{stdout.empty? ? 'Empty file' : stdout}"
+      else
+        logger.warn "Custom DNSMASQ stdout: File doesn't exist"
+      end
 
-          logger.info "Homebrew service check: Not configured yet - #{homebrew_service_check[:stdout]}"
-          logger.info "Will configure DNSMASQ service for first use"
-        else
-          # Not a first run, so we should be warning about real issues
-          logger.warn "❌ DNSMASQ service not running properly"
+      # Step 8: Check system log for dnsmasq messages
+      syslog_check = execute_command_with_output('grep -i dnsmasq /var/log/system.log | tail -10')
+      if syslog_check[:success] && !syslog_check[:stdout].empty?
+        logger.warn "Recent system log entries:"
+        logger.warn syslog_check[:stdout]
+      end
 
-          # Step 4: Detailed diagnostics
-          logger.warn "Process check: #{process_running ? 'Passed' : 'Failed'} - #{process_check[:stdout]}"
-          if more_detailed_process[:success] && !more_detailed_process[:stdout].empty?
-            logger.warn "Process details: #{more_detailed_process[:stdout]}"
-          end
+      # Step 9: If everything else has failed, try direct launch one last time
+      if @force && !is_running
+        logger.warn "Force mode enabled - Attempting to start DNSMASQ directly as a last resort..."
+        # Attempt to run dnsmasq directly to see any immediate error messages
+        direct_start = execute_command_with_output("sudo /opt/homebrew/sbin/dnsmasq --no-daemon --conf-file=#{DNSMASQ_CONF} --user=root")
+        logger.warn "Direct start result: #{direct_start[:stdout]}"
+        logger.warn "Direct start error: #{direct_start[:stderr]}"
 
-          logger.warn "Port 67 usage: #{dhcp_listener ? 'Something is using DHCP port' : 'No DHCP service detected'}"
-          if dhcp_listener
-            logger.warn "Port 67 details: #{port_check[:stdout]}"
-          end
-
-          logger.warn "Homebrew service check: #{homebrew_service_active ? 'Passed' : 'Failed'} - #{homebrew_service_check[:stdout]}"
-          logger.warn "Custom service check: #{custom_service_active ? 'Passed' : 'Failed'} - #{custom_service_check[:stdout]}"
-          logger.warn "LaunchDaemon files: #{launchdaemon_check[:stdout]}"
-
-          # Step 5: Check configuration
-          if File.exist?(DNSMASQ_CONF)
-            config_check = execute_command_with_output("cat #{DNSMASQ_CONF} | grep -v '^#' | grep -v '^$'")
-            logger.warn "Config file exists: Yes"
-            logger.warn "Config content (excluding comments):"
-            logger.warn config_check[:stdout]
-
-            # Check permissions
-            perm_check = execute_command_with_output("ls -la #{DNSMASQ_CONF}")
-            logger.warn "Config permissions: #{perm_check[:stdout]}"
-          else
-            logger.warn "Config file exists: No - Config file is missing!"
-          end
-        end
-
-        # Step 6: Check executable
-        bin_check = execute_command_with_output("ls -la /opt/homebrew/sbin/dnsmasq")
-        logger.warn "DNSMASQ binary: #{bin_check[:success] ? bin_check[:stdout] : 'Not found!'}"
-
-        # Step 7: Check logs
-        if File.exist?('/tmp/dnsmasq.stderr')
-          stderr = File.read('/tmp/dnsmasq.stderr').strip
-          logger.warn "Custom DNSMASQ stderr: #{stderr.empty? ? 'Empty file' : stderr}"
-        else
-          logger.warn "Custom DNSMASQ stderr: File doesn't exist"
-        end
-
-        if File.exist?('/tmp/dnsmasq.stdout')
-          stdout = File.read('/tmp/dnsmasq.stdout').strip
-          logger.warn "Custom DNSMASQ stdout: #{stdout.empty? ? 'Empty file' : stdout}"
-        else
-          logger.warn "Custom DNSMASQ stdout: File doesn't exist"
-        end
-
-        # Step 8: Check system log for dnsmasq messages
-        syslog_check = execute_command_with_output('grep -i dnsmasq /var/log/system.log | tail -10')
-        if syslog_check[:success] && !syslog_check[:stdout].empty?
-          logger.warn "Recent system log entries:"
-          logger.warn syslog_check[:stdout]
-        end
-
-        # Step 9: If everything else has failed, try direct launch one last time
-        if @force && !is_running
-          logger.warn "Force mode enabled - Attempting to start DNSMASQ directly as a last resort..."
-          # Attempt to run dnsmasq directly to see any immediate error messages
-          direct_start = execute_command_with_output("sudo /opt/homebrew/sbin/dnsmasq --no-daemon --conf-file=#{DNSMASQ_CONF} --user=root")
-          logger.warn "Direct start result: #{direct_start[:stdout]}"
-          logger.warn "Direct start error: #{direct_start[:stderr]}"
-
-          # Check if it's running now
-          sleep(1)
-          new_check = execute_command_with_output('pgrep -l dnsmasq')
-          if new_check[:success] && !new_check[:stdout].empty?
-            logger.info "✅ DNSMASQ service started via direct launch"
-            is_running = true
-          end
+        # Check if it's running now
+        sleep(1)
+        new_check = execute_command_with_output('pgrep -l dnsmasq')
+        if new_check[:success] && !new_check[:stdout].empty?
+          logger.info "✅ DNSMASQ service started via direct launch"
+          return true
         end
       end
 
-      # Return final status
-      is_running
+      return is_running
     end
 
     def flush_dns_cache

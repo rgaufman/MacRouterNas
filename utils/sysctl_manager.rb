@@ -137,23 +137,67 @@ module MacRouterUtils
     def create_ip_forwarding_launch_daemon
       logger.info "Creating LaunchDaemon for persistent IP forwarding..."
       temp_file = nil
-      
+
       begin
         # Use the template renderer to create the LaunchDaemon plist
         renderer = MacRouterUtils::TemplateRenderer.new
-        
+
         begin
           plist_content = renderer.render('ip_forwarding_launchdaemon', {})
         rescue StandardError => e
           raise ConfigurationError, "Failed to render IP forwarding LaunchDaemon template: #{e.message}"
         end
 
+        # Create a simple startup script that will enable IP forwarding
+        # This will be stored in our persistent location
+        startup_script = <<~SCRIPT
+          #!/bin/bash
+          # Script to enable IP forwarding on macOS
+          # Created by MacRouterNas
+
+          # Enable IP forwarding and verify it's enabled
+          /usr/sbin/sysctl -w net.inet.ip.forwarding=1
+
+          # Verify it's enabled
+          if [ $(/usr/sbin/sysctl -n net.inet.ip.forwarding) -ne 1 ]; then
+              echo "$(date): ERROR - Failed to enable IP forwarding!"
+              exit 1
+          fi
+
+          echo "$(date): Successfully enabled IP forwarding"
+          exit 0
+        SCRIPT
+
+        # Store the script in the persistent location
+        script_path = store_in_persistent_location('enable_ip_forwarding.sh', startup_script)
+
+        if script_path.nil?
+          logger.warn "Failed to create startup script in persistent location, continuing with standard approach"
+        else
+          logger.info "Created IP forwarding startup script at: #{script_path}"
+
+          # Make the script executable
+          chmod_result = execute_command_with_output("sudo chmod 755 #{script_path}")
+          if !chmod_result[:success]
+            logger.warn "Failed to make startup script executable: #{chmod_result[:stderr]}"
+          end
+
+          # Modify the plist_content to use our persistent script
+          plist_content = plist_content.gsub(
+            /<string>[\s\S]*?# Enable IP forwarding[\s\S]*?sleep 2[\s\S]*?<\/string>/m,
+            "<string>#{script_path}</string>"
+          )
+        end
+
+        # Also store the LaunchDaemon plist in the persistent location
+        store_in_persistent_location('com.macrouternas.ipforwarding.plist', plist_content)
+
         # Write to a secure temporary file
         begin
           tmp = Tempfile.new(['com.macrouternas.ipforwarding', '.plist'], '/tmp')
           temp_file = tmp.path
           tmp.close
-          
+
           File.write(temp_file, plist_content)
           FileUtils.chmod(0644, temp_file) # Ensure it's readable
         rescue StandardError => e
@@ -164,7 +208,7 @@ module MacRouterUtils
         if File.exist?(LAUNCH_DAEMON_PLIST)
           logger.info "Unloading existing IP forwarding LaunchDaemon..."
           unload_result = execute_command_with_output("sudo launchctl unload -w #{LAUNCH_DAEMON_PLIST}")
-          
+
           if !unload_result[:success]
             logger.warn "Failed to unload existing IP forwarding LaunchDaemon: #{unload_result[:stderr]}"
             # This is not fatal, we'll overwrite the file and try loading again
@@ -178,19 +222,19 @@ module MacRouterUtils
         if !mkdir_result[:success]
           raise ExecutionError, "Failed to create LaunchDaemons directory: #{mkdir_result[:stderr]}"
         end
-        
+
         # Copy the file
         cp_result = execute_command_with_output("sudo cp #{temp_file} #{LAUNCH_DAEMON_PLIST}")
         if !cp_result[:success]
           raise ExecutionError, "Failed to install IP forwarding LaunchDaemon: #{cp_result[:stderr]}"
         end
-        
+
         # Set ownership and permissions
         chown_result = execute_command_with_output("sudo chown root:wheel #{LAUNCH_DAEMON_PLIST}")
         if !chown_result[:success]
           raise ExecutionError, "Failed to set ownership on LaunchDaemon: #{chown_result[:stderr]}"
         end
-        
+
         chmod_result = execute_command_with_output("sudo chmod 644 #{LAUNCH_DAEMON_PLIST}")
         if !chmod_result[:success]
           raise ExecutionError, "Failed to set permissions on LaunchDaemon: #{chmod_result[:stderr]}"
@@ -199,14 +243,14 @@ module MacRouterUtils
         # Load the LaunchDaemon
         logger.info "Loading IP forwarding LaunchDaemon..."
         load_result = execute_command_with_output("sudo launchctl load -w #{LAUNCH_DAEMON_PLIST}")
-        
+
         if !load_result[:success]
           raise ExecutionError, "Failed to load IP forwarding LaunchDaemon: #{load_result[:stderr]}"
         end
 
         # Give it a moment to run
         sleep(1)
-        
+
         # Verify IP forwarding is still enabled
         verify_result = execute_command_with_output("sysctl net.inet.ip.forwarding")
         if !verify_result[:success] || (!verify_result[:stdout].include?(": 1") && !verify_result[:stdout].include?("=1"))
