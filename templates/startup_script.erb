@@ -1,0 +1,13 @@
+#!/bin/sh
+# Startup script for MacRouterNas - Re-establishes port forwarding rules
+<% if defined?(@forwards) && @forwards.any? %>
+# Port forwarding rules
+<% @forwards.each do |forward| %>
+<% if forward[:protocol] == 'udp' || forward[:protocol] == 'both' %>
+<%= @binary_path %> -a -r udp <%= forward[:local_port] %> <%= forward[:remote_ip] %> <%= forward[:remote_port] %> <%= forward[:description] %>
+<% end %>
+<% if forward[:protocol] == 'tcp' || forward[:protocol] == 'both' %>
+<%= @binary_path %> -a -r tcp <%= forward[:local_port] %> <%= forward[:remote_ip] %> <%= forward[:remote_port] %> <%= forward[:description] %>
+<% end %>
+<% end %>
+<% end %>

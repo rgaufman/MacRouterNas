@@ -1,0 +1,12 @@
+# TCP MSS clamping to fix issues with PPP and HTTPS connections
+scrub out on <%= @wan %> proto tcp all max-mss 1452
+
+# NAT rule for routing traffic
+nat on <%= @wan %> from <%= @subnet %> to any -> (<%= @wan %>)
+
+<% if @port_forwards && !@port_forwards.empty? %>
+# Port forwarding rules (auto-generated from config)
+<% @port_forwards.each do |rule| %>
+rdr on <%= @wan %> proto <%= rule['protocol'] %> from any to any port <%= rule['external_port'] %> -> <%= rule['internal_ip'] %> port <%= rule['internal_port'] %>
+<% end %>
+<% end %>
