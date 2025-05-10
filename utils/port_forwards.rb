@@ -143,7 +143,7 @@ module MacRouterUtils
         tmp_path = tmp_file.path
         tmp_file.close
 
-        # Create the rdr rules
+        # Create the rdr rules using the direct approach (no anchors)
         rules_content = "# Port forwarding rules\n"
         port_forwards.each do |rule|
           rules_content += "rdr on #{@wan_interface} proto #{rule['protocol']} from any to any port #{rule['external_port']} -> #{rule['internal_ip']} port #{rule['internal_port']}\n"
@@ -162,45 +162,38 @@ module MacRouterUtils
           logger.warn "Failed to save persistent rules file: #{e.message}"
         end
 
-        # Load the rules into PF
-        load_result = execute_command_with_output("sudo pfctl -a com.macrouternas/portforwards -f #{tmp_path}")
-        unless load_result[:success]
-          # Check if anchor doesn't exist and needs to be created
-          if load_result[:stderr].include?("Could not open anchor")
-            # Create anchor first
-            execute_command_with_output("sudo pfctl -N com.macrouternas")
-            execute_command_with_output("sudo pfctl -N com.macrouternas/portforwards")
-            # Try loading again
-            load_result = execute_command_with_output("sudo pfctl -a com.macrouternas/portforwards -f #{tmp_path}")
-            unless load_result[:success]
-              logger.error "Failed to load port forwarding rules: #{load_result[:stderr]}"
-              return false
-            end
-          else
-            logger.error "Failed to load port forwarding rules: #{load_result[:stderr]}"
-            return false
-          end
+        # Get current NAT rules to combine with port forwarding
+        nat_output = execute_command_with_output('sudo pfctl -s nat')
+
+        # Prepare combined rules (NAT + port forwarding)
+        combined_rules = ""
+        if nat_output[:success] && !nat_output[:stdout].empty?
+          # Use existing NAT rules
+          combined_rules = nat_output[:stdout] + "\n\n" + rules_content
+        else
+          # If no NAT rules found, use port forwarding rules only
+          combined_rules = rules_content
+          logger.warn "No existing NAT rules found. Only applying port forwarding rules."
         end
 
-        # Add reference to anchor in the main ruleset if not already there
-        main_ruleset = execute_command_with_output("sudo pfctl -s all")
-        unless main_ruleset[:stdout].include?("com.macrouternas/portforwards")
-          # We need to add a reference to our anchor
-          anchor_rule = "rdr-anchor \"com.macrouternas/portforwards\""
-          tmp_anchor = Tempfile.new(['anchor_ref', '.conf'], '/tmp')
-          tmp_anchor_path = tmp_anchor.path
-          tmp_anchor.close
-          
-          File.write(tmp_anchor_path, anchor_rule)
-          FileUtils.chmod(0600, tmp_anchor_path)
-          
-          add_anchor = execute_command_with_output("sudo pfctl -a com.macrouternas -f #{tmp_anchor_path}")
-          unless add_anchor[:success]
-            logger.warn "Failed to add anchor reference: #{add_anchor[:stderr]}"
-            # This isn't fatal - the port forwarding rules may still work
-          end
-          
-          File.unlink(tmp_anchor_path) if File.exist?(tmp_anchor_path)
+        # Create a temporary file for combined rules
+        combined_tmp = Tempfile.new(['combined_rules', '.conf'], '/tmp')
+        combined_path = combined_tmp.path
+        combined_tmp.close
+
+        File.write(combined_path, combined_rules)
+        FileUtils.chmod(0600, combined_path)
+
+        # Load the combined rules
+        load_result = execute_command_with_output("sudo pfctl -f #{combined_path}")
+
+        # Clean up combined rules temp file
+        File.unlink(combined_path) if File.exist?(combined_path)
+
+        # Check for errors
+        if !load_result[:success] && !load_result[:stderr].include?('could result in flushing of rules')
+          logger.error "Failed to load combined NAT and port forwarding rules: #{load_result[:stderr]}"
+          return false
         end
 
         logger.info "Applied #{port_forwards.length} port forwarding rules"

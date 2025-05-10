@@ -9,24 +9,7 @@
         <string>/bin/sh</string>
         <string>-c</string>
         <string>
-            # Create NAT rule file with MSS clamping for PPP interfaces
-            cat > /tmp/nat_rule << 'EOF'
-# TCP MSS clamping to fix issues with PPP and HTTPS connections
-scrub out on <%= @wan_interface %> proto tcp all max-mss 1440
-
-# NAT rule for routing traffic
-nat on <%= @wan_interface %> from <%= @subnet %> to any -> (<%= @wan_interface %>)
-
-# Load port forwarding rules if they exist
-if [ -f "/opt/homebrew/etc/macrouternas/port_forwards.json" ]; then
-    echo "Loading port forwarding rules from /opt/homebrew/etc/macrouternas/port_forwards.json"
-    /sbin/pfctl -a com.macrouternas/portforwards -f /opt/homebrew/etc/macrouternas/port_forwards_rules.conf 2>/dev/null
-fi
-if [ -f "$HOME/.config/macrouternas/port_forwards.json" ]; then
-    echo "Loading port forwarding rules from $HOME/.config/macrouternas/port_forwards.json"
-    /sbin/pfctl -a com.macrouternas/portforwards -f $HOME/.config/macrouternas/port_forwards_rules.conf 2>/dev/null
-fi
-EOF
+            # We don't need to create a temporary file anymore, as we use the persistent rule file directly
 
             # Wait 5 seconds for network interfaces to be ready
             sleep 5
@@ -34,11 +17,19 @@ EOF
             # Enable PF if not already enabled
             /sbin/pfctl -e || true
 
-            # Flush any existing NAT rules
-            /sbin/pfctl -F nat
+            # We don't flush rules as it can break connectivity
+            # Instead, we load our rules which will override any conflicting ones
 
-            # Load NAT rule
-            /sbin/pfctl -f /tmp/nat_rule
+            # Load NAT rule from persistent location
+            /sbin/pfctl -f /usr/local/etc/MacRouterNas/nat_rules.conf
+
+            # Verify MSS clamping rule was loaded - sometimes scrub rules don't load properly
+            # Check if MSS clamping rule is present
+            if ! /sbin/pfctl -sa | grep -q 'max-mss'; then
+                echo "$(date): MSS clamping rule not found, applying it separately"
+                # Apply the persistent MSS clamping rule file
+                /sbin/pfctl -f /usr/local/etc/MacRouterNas/mss_clamp_rule.conf
+            fi
         </string>
     </array>
     <key>RunAtLoad</key>

@@ -89,39 +89,45 @@ module MacRouterUtils
     def configure
       logger.info "Setting up PF NAT configuration using the proven working approach"
 
-      # Use a temporary file with a unique name for better security
-      tmp_nat_rule = nil
-
       begin
         # Step 1: Verify interfaces exist before proceeding
         verify_interfaces
 
-        # Step 2: Create the NAT rule file with appropriate permissions
-        # Add MSS clamping rule to prevent issues with PPP interfaces and HTTPS sites
-        # Note that scrub rules must come before nat rules (rule ordering requirement)
-        nat_rule = "# TCP MSS clamping to fix issues with PPP and HTTPS connections\n"
-        nat_rule += "scrub out on #{@wan} proto tcp all max-mss 1440\n"
+        # Step 2: Render NAT and MSS clamping rule templates
+        renderer = MacRouterUtils::TemplateRenderer.new
 
-        # Add NAT rule after scrub rule
-        nat_rule += "\n# NAT rule for routing traffic\n"
-        nat_rule += "nat on #{@wan} from #{@subnet} to any -> (#{@wan})\n"
+        # Get port forwards if available
+        port_forwards = []
+        if @port_forwards
+          port_forwards = @port_forwards.list_port_forwards
+        end
 
-        # Create a file with the combined rules
-        tmp_nat_rule = create_secure_nat_rule_file(nat_rule)
+        # Variables for templates
+        variables = {
+          wan: @wan,
+          subnet: @subnet,
+          port_forwards: port_forwards
+        }
+
+        # Render the NAT and scrub rules template
+        nat_rule = renderer.render('nat_and_scrub_rules', variables)
+
+        # Store in persistent location
+        nat_rule_path = store_in_persistent_location('nat_rules.conf', nat_rule)
+
+        # Render and store MSS clamping rule separately
+        mss_rule = renderer.render('mss_clamping_rule', variables)
+        store_in_persistent_location('mss_clamp_rule.conf', mss_rule)
+
         logger.info "Created NAT rule file with NAT and MSS clamping rules"
 
-        # Step 3: Flush NAT rules but keep PF enabled (DO NOT disable PF, it breaks connectivity)
-        logger.info "Flushing NAT rules while keeping PF enabled..."
-        flush_result = execute_command_with_output("sudo pfctl -F nat")
+        # Step 3: Instead of flushing, just load the new rules (flushing can cause issues with sharing)
+        logger.info "Loading NAT and filter rules (including scrub) while keeping PF enabled..."
 
-        if !flush_result[:success]
-          raise ExecutionError, "Failed to flush NAT rules: #{flush_result[:stderr]}"
-        end
-        logger.info "Successfully flushed NAT rules"
-
-        # Step 4: Load our NAT rule
-        logger.info "Loading NAT rule from #{tmp_nat_rule}..."
-        load_result = execute_command_with_output("sudo pfctl -f #{tmp_nat_rule}")
+        # Step 4: Load our NAT rule from the persistent location without flushing first
+        persistent_nat_path = File.join(PERSISTENT_CONFIG_DIR, 'nat_rules.conf')
+        logger.info "Loading NAT rule from #{persistent_nat_path}..."
+        load_result = execute_command_with_output("sudo pfctl -f #{persistent_nat_path}")
 
         # Check for errors but ignore warnings about flushing rules (which is normal)
         if !load_result[:success] && !load_result[:stderr].include?('could result in flushing of rules')
@@ -159,9 +165,6 @@ module MacRouterUtils
       rescue StandardError => e
         logger.error "Failed to configure PF: #{e.message}", exception: e
         raise
-      ensure
-        # Always clean up the temporary file
-        File.unlink(tmp_nat_rule) if tmp_nat_rule && File.exist?(tmp_nat_rule)
       end
     end
 
@@ -288,6 +291,26 @@ module MacRouterUtils
           nat_status = parse_nat_rule_output(nat_check[:stdout])
           if nat_status[:nat_configured]
             logger.info "NAT rules verified with pfctl -s all"
+
+            # Also check if scrub/MSS clamping rule is loaded
+            scrub_check = execute_command_with_output("sudo pfctl -sa | grep -i 'max-mss'")
+            unless scrub_check[:success] && !scrub_check[:stdout].empty?
+              # Apply the MSS clamping rule using our persistent file
+              logger.warn "MSS clamping rule not found, applying it from persistent location"
+              mss_rule_path = "/usr/local/etc/MacRouterNas/mss_clamp_rule.conf"
+
+              if File.exist?(mss_rule_path)
+                mss_result = execute_command_with_output("sudo pfctl -f #{mss_rule_path}")
+                if mss_result[:success] || mss_result[:stderr].include?('could result in flushing of rules')
+                  logger.info "MSS clamping rule successfully applied"
+                else
+                  logger.warn "Failed to apply MSS clamping rule: #{mss_result[:stderr]}"
+                end
+              else
+                logger.warn "MSS clamping rule file not found at #{mss_rule_path}"
+              end
+            end
+
             return true
           end
         end
@@ -298,6 +321,26 @@ module MacRouterUtils
           nat_status = parse_nat_rule_output(nat_only_check[:stdout])
           if nat_status[:nat_configured]
             logger.info "NAT rules verified with pfctl -s nat"
+
+            # Also check if scrub/MSS clamping rule is loaded
+            scrub_check = execute_command_with_output("sudo pfctl -sa | grep -i 'max-mss'")
+            unless scrub_check[:success] && !scrub_check[:stdout].empty?
+              # Apply the MSS clamping rule using our persistent file
+              logger.warn "MSS clamping rule not found, applying it from persistent location"
+              mss_rule_path = "/usr/local/etc/MacRouterNas/mss_clamp_rule.conf"
+
+              if File.exist?(mss_rule_path)
+                mss_result = execute_command_with_output("sudo pfctl -f #{mss_rule_path}")
+                if mss_result[:success] || mss_result[:stderr].include?('could result in flushing of rules')
+                  logger.info "MSS clamping rule successfully applied"
+                else
+                  logger.warn "Failed to apply MSS clamping rule: #{mss_result[:stderr]}"
+                end
+              else
+                logger.warn "MSS clamping rule file not found at #{mss_rule_path}"
+              end
+            end
+
             return true
           end
         end
@@ -355,14 +398,34 @@ module MacRouterUtils
         # DO NOT disable PF, just remove NAT rules
         # DO NOT USE: execute_command_with_output("sudo pfctl -d || true")
 
-        # Step 1: Flush NAT rules only (keep PF enabled)
-        flush_result = execute_command_with_output("sudo pfctl -F nat")
+        # Step 1: Flush NAT and filter rules (including scrub) (keep PF enabled)
+        flush_result = execute_command_with_output("sudo pfctl -F nat -F rules")
 
         if !flush_result[:success]
           # Non-fatal error, continue with uninstallation
-          logger.warn "Failed to flush NAT rules: #{flush_result[:stderr]}"
+          logger.warn "Failed to flush NAT and filter rules: #{flush_result[:stderr]}"
         else
-          logger.info "Successfully flushed NAT rules (kept PF enabled)"
+          logger.info "Successfully flushed NAT and filter rules (kept PF enabled)"
+        end
+
+        # Important: Verify that NAT rules were actually flushed (sometimes they persist)
+        nat_check = execute_command_with_output("sudo pfctl -s nat | grep '#{@subnet}'")
+        if nat_check[:success] && !nat_check[:stdout].empty?
+          logger.warn "NAT rules still persist after flush. Attempting more aggressive cleanup..."
+          # Try a more aggressive approach by loading an empty ruleset
+          empty_file = Tempfile.new(['empty_rules', '.conf'], '/tmp')
+          empty_path = empty_file.path
+          empty_file.close
+
+          load_result = execute_command_with_output("sudo pfctl -f #{empty_path}")
+          if !load_result[:success]
+            logger.warn "Failed to load empty ruleset: #{load_result[:stderr]}"
+          else
+            logger.info "Loaded empty ruleset to clear persistent rules"
+          end
+
+          # Clean up
+          File.unlink(empty_path) if File.exist?(empty_path)
         end
 
         # Step 2: Clean up any temp files
@@ -389,27 +452,52 @@ module MacRouterUtils
           end
         end
 
-        # Step 3: Remove the LaunchDaemon if it exists
-        if File.exist?(NAT_LAUNCH_DAEMON_PATH)
-          # First unload it
-          unload_result = execute_command_with_output("sudo launchctl unload -w #{NAT_LAUNCH_DAEMON_PATH}")
+        # Step 3: Remove the LaunchDaemon if it exists (including any backup files)
+        [NAT_LAUNCH_DAEMON_PATH, "#{NAT_LAUNCH_DAEMON_PATH}.bak"].each do |daemon_path|
+          if File.exist?(daemon_path)
+            # First unload it (only needed for the main one, not the backup)
+            if daemon_path == NAT_LAUNCH_DAEMON_PATH
+              unload_result = execute_command_with_output("sudo launchctl unload -w #{daemon_path}")
 
-          if !unload_result[:success]
-            logger.warn "Failed to unload NAT LaunchDaemon: #{unload_result[:stderr]}"
-          else
-            logger.info "Unloaded NAT LaunchDaemon"
+              if !unload_result[:success]
+                logger.warn "Failed to unload NAT LaunchDaemon: #{unload_result[:stderr]}"
+              else
+                logger.info "Unloaded NAT LaunchDaemon"
+              end
+            end
+
+            # Then remove the file
+            remove_result = execute_command_with_output("sudo rm #{daemon_path}")
+
+            if !remove_result[:success]
+              logger.warn "Failed to remove NAT LaunchDaemon file (#{daemon_path}): #{remove_result[:stderr]}"
+            else
+              logger.info "Removed NAT LaunchDaemon file: #{daemon_path}"
+            end
+          end
+        end
+
+        # Step 4: Clean up persistent configuration directory
+        persistent_dir = '/usr/local/etc/MacRouterNas'
+        if Dir.exist?(persistent_dir)
+          logger.info "Removing persistent configuration directory: #{persistent_dir}"
+
+          # List files before deletion for debugging
+          files = execute_command_with_output("ls -la #{persistent_dir}")
+          if files[:success]
+            logger.debug "Files in persistent directory before deletion: #{files[:stdout]}"
           end
 
-          # Then remove the file
-          remove_result = execute_command_with_output("sudo rm #{NAT_LAUNCH_DAEMON_PATH}")
+          # Remove the directory and its contents
+          rmdir_result = execute_command_with_output("sudo rm -rf #{persistent_dir}")
 
-          if !remove_result[:success]
-            logger.warn "Failed to remove NAT LaunchDaemon file: #{remove_result[:stderr]}"
+          if !rmdir_result[:success]
+            logger.warn "Failed to remove persistent configuration directory: #{rmdir_result[:stderr]}"
           else
-            logger.info "Removed NAT LaunchDaemon file"
+            logger.info "Successfully removed persistent configuration directory"
           end
         else
-          logger.info "No NAT LaunchDaemon found to remove"
+          logger.info "No persistent configuration directory found"
         end
 
         logger.info "Successfully removed PF NAT configuration"
@@ -440,6 +528,26 @@ module MacRouterUtils
       if nat_check[:success] && !nat_check[:stdout].empty?
         if nat_check[:stdout].include?(@wan) && nat_check[:stdout].include?("#{@subnet}")
           logger.info "NAT rules verified with correct interfaces"
+
+          # Check if MSS clamping rule is already applied
+          scrub_check = execute_command_with_output("sudo pfctl -sa | grep -i 'max-mss'")
+          unless scrub_check[:success] && !scrub_check[:stdout].empty?
+            # Apply the MSS clamping rule using our persistent file
+            logger.info "MSS clamping rule not found, applying it from persistent location"
+            mss_rule_path = "/usr/local/etc/MacRouterNas/mss_clamp_rule.conf"
+
+            if File.exist?(mss_rule_path)
+              mss_result = execute_command_with_output("sudo pfctl -f #{mss_rule_path}")
+              if mss_result[:success] || mss_result[:stderr].include?('could result in flushing of rules')
+                logger.info "MSS clamping rule successfully applied"
+              else
+                logger.warn "Failed to apply MSS clamping rule: #{mss_result[:stderr]}"
+              end
+            else
+              logger.warn "MSS clamping rule file not found at #{mss_rule_path}"
+            end
+          end
+
           return true
         else
           logger.warn "NAT rules exist but may not match expected configuration"
@@ -481,11 +589,18 @@ module MacRouterUtils
       temp_file = nil
 
       begin
+        # Get port forwarding rules if we have a port forwards manager
+        port_forwards = []
+        if @port_forwards
+          port_forwards = @port_forwards.list_port_forwards
+        end
+
         # Use the template renderer to create the LaunchDaemon plist
         renderer = MacRouterUtils::TemplateRenderer.new
         variables = {
           wan_interface: @wan,
-          subnet: @subnet
+          subnet: @subnet,
+          port_forwards: port_forwards
         }
 
         # Render the template
@@ -493,6 +608,38 @@ module MacRouterUtils
           plist_content = renderer.render('nat_launchdaemon', variables)
         rescue StandardError => e
           raise ConfigurationError, "Failed to render NAT LaunchDaemon template: #{e.message}"
+        end
+
+        # Store NAT rule in persistent location first
+        # This is the base NAT rule that will be loaded at boot time
+        nat_rule = "# TCP MSS clamping to fix issues with PPP and HTTPS connections\n"
+        nat_rule += "scrub out on #{@wan} proto tcp all max-mss 1452\n"
+        nat_rule += "\n# NAT rule for routing traffic\n"
+        nat_rule += "nat on #{@wan} from #{@subnet} to any -> (#{@wan})\n"
+
+        # Also store MSS clamping rule separately for easy application
+        mss_rule = "# TCP MSS clamping to fix issues with PPP and HTTPS connections\n"
+        mss_rule += "scrub out on #{@wan} proto tcp all max-mss 1452\n"
+        store_in_persistent_location('mss_clamp_rule.conf', mss_rule)
+
+        # Add port forwarding rules if any
+        if port_forwards && !port_forwards.empty?
+          nat_rule += "\n# Port forwarding rules (auto-generated from config)\n"
+
+          port_forwards.each do |rule|
+            nat_rule += "rdr on #{@wan} proto #{rule['protocol']} from any to any port #{rule['external_port']} -> #{rule['internal_ip']} port #{rule['internal_port']}\n"
+          end
+        end
+
+        # Store in persistent location
+        nat_rule_path = store_in_persistent_location('nat_rules.conf', nat_rule)
+
+        if nat_rule_path.nil?
+          logger.warn "Failed to store NAT rule in persistent location, continuing with standard approach"
+        else
+          logger.info "Stored NAT rule in persistent location: #{nat_rule_path}"
+
+          # No need to modify the plist_content anymore, as the template directly references the persistent file
         end
 
         # Write to a secure temporary file
@@ -506,6 +653,9 @@ module MacRouterUtils
         rescue StandardError => e
           raise ExecutionError, "Failed to create temporary plist file: #{e.message}"
         end
+
+        # Also store the LaunchDaemon plist in our persistent location for reference
+        store_in_persistent_location('com.macrouternas.nat.plist', plist_content)
 
         # Check if LaunchDaemon already exists and unload it if needed
         if File.exist?(NAT_LAUNCH_DAEMON_PATH)
