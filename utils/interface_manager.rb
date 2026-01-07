@@ -20,7 +20,7 @@ module MacRouterUtils
         logger.info "#{@lan} already has IP #{@ip}"
       else
         execute_command("sudo ifconfig #{@lan} inet #{@ip} netmask 255.255.255.0 up",
-                       "Failed to assign IP #{@ip} to interface #{@lan}")
+                        "Failed to assign IP #{@ip} to interface #{@lan}")
         logger.info "IP #{@ip} assigned to #{@lan}"
       end
     rescue StandardError => e
@@ -29,21 +29,19 @@ module MacRouterUtils
     end
 
     def uninstall
-      begin
-        # Check if the interface has our static IP
-        output = `ifconfig #{@lan}`
-        if output.include?(@ip)
-          # Remove the static IP by bringing the interface down and up again
-          execute_command("sudo ifconfig #{@lan} down", "Failed to bring down interface #{@lan}")
-          execute_command("sudo ifconfig #{@lan} up", "Failed to bring up interface #{@lan}")
-          logger.info "Reset interface #{@lan} configuration"
-        else
-          logger.info "Interface #{@lan} does not have our static IP, no reset needed"
-        end
-      rescue StandardError => e
-        logger.error "Failed to reset interface: #{e.message}", exception: e
-        raise
+      # Check if the interface has our static IP
+      output = `ifconfig #{@lan}`
+      if output.include?(@ip)
+        # Remove the static IP by bringing the interface down and up again
+        execute_command("sudo ifconfig #{@lan} down", "Failed to bring down interface #{@lan}")
+        execute_command("sudo ifconfig #{@lan} up", "Failed to bring up interface #{@lan}")
+        logger.info "Reset interface #{@lan} configuration"
+      else
+        logger.info "Interface #{@lan} does not have our static IP, no reset needed"
       end
+    rescue StandardError => e
+      logger.error "Failed to reset interface: #{e.message}", exception: e
+      raise
     end
 
     def verify_configured
@@ -55,7 +53,7 @@ module MacRouterUtils
       status = { active: false }
 
       # Check if interface exists and is active
-      result = execute_command_with_output("ifconfig #{interface}")
+      result = shell("ifconfig #{interface}")
       if result[:success]
         # Handle different interface types differently
         if interface.start_with?('ppp')
@@ -88,7 +86,7 @@ module MacRouterUtils
       status = { active: false, has_static_ip: false }
 
       # Check if interface exists and is active
-      result = execute_command_with_output("ifconfig #{@lan}")
+      result = shell("ifconfig #{@lan}")
       if result[:success]
         # Handle different interface types differently
         if @lan.start_with?('ppp')
@@ -99,20 +97,16 @@ module MacRouterUtils
 
           # Extract IP if available
           ip_match = result[:stdout].match(/inet\s+(\d+\.\d+\.\d+\.\d+)/)
-          if ip_match
-            status[:ip] = ip_match[1]
-            status[:has_static_ip] = (ip_match[1] == @ip)
-          end
         else
           # For Ethernet and other interfaces, check for 'status: active'
           status[:active] = result[:stdout].include?('status: active')
 
           # Extract IP if available
           ip_match = result[:stdout].match(/inet (\d+\.\d+\.\d+\.\d+)/)
-          if ip_match
-            status[:ip] = ip_match[1]
-            status[:has_static_ip] = (ip_match[1] == @ip)
-          end
+        end
+        if ip_match
+          status[:ip] = ip_match[1]
+          status[:has_static_ip] = (ip_match[1] == @ip)
         end
       end
 

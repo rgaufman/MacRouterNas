@@ -55,10 +55,11 @@ RSpec.describe MacRouterUtils::InterfaceManager do
       end
 
       it 'correctly identifies active interface with matching IP' do
-        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true, stdout: active_interface })
-        
+        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true,
+stdout: active_interface })
+
         status = interface_manager.check_lan_status
-        
+
         expect(status[:active]).to be true
         expect(status[:ip]).to eq('192.168.100.1')
         expect(status[:has_static_ip]).to be true
@@ -79,10 +80,11 @@ RSpec.describe MacRouterUtils::InterfaceManager do
       end
 
       it 'correctly identifies active interface with non-matching IP' do
-        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true, stdout: different_ip_interface })
-        
+        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true,
+stdout: different_ip_interface })
+
         status = interface_manager.check_lan_status
-        
+
         expect(status[:active]).to be true
         expect(status[:ip]).to eq('192.168.100.2')
         expect(status[:has_static_ip]).to be false
@@ -102,10 +104,11 @@ RSpec.describe MacRouterUtils::InterfaceManager do
       end
 
       it 'correctly identifies inactive interface' do
-        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true, stdout: inactive_interface })
-        
+        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true,
+stdout: inactive_interface })
+
         status = interface_manager.check_lan_status
-        
+
         expect(status[:active]).to be false
         expect(status[:ip]).to be_nil
         expect(status[:has_static_ip]).to be false
@@ -129,7 +132,8 @@ RSpec.describe MacRouterUtils::InterfaceManager do
       end
 
       it 'correctly identifies active WAN interface' do
-        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true, stdout: active_wan })
+        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true,
+stdout: active_wan })
 
         status = interface_manager.check_wan_status('en0')
 
@@ -151,7 +155,8 @@ RSpec.describe MacRouterUtils::InterfaceManager do
       end
 
       it 'correctly identifies inactive WAN interface' do
-        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true, stdout: inactive_wan })
+        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true,
+stdout: inactive_wan })
 
         status = interface_manager.check_wan_status('en0')
 
@@ -171,7 +176,8 @@ RSpec.describe MacRouterUtils::InterfaceManager do
       end
 
       it 'correctly identifies active PPP interface' do
-        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true, stdout: active_ppp })
+        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true,
+stdout: active_ppp })
 
         status = interface_manager.check_wan_status('ppp0')
 
@@ -188,7 +194,8 @@ RSpec.describe MacRouterUtils::InterfaceManager do
       end
 
       it 'correctly identifies inactive PPP interface without RUNNING flag' do
-        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true, stdout: inactive_ppp })
+        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true,
+stdout: inactive_ppp })
 
         status = interface_manager.check_wan_status('ppp0')
 
@@ -205,7 +212,8 @@ RSpec.describe MacRouterUtils::InterfaceManager do
       end
 
       it 'correctly identifies PPP interface with RUNNING flag but no IP' do
-        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true, stdout: ppp_missing_ip })
+        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true,
+stdout: ppp_missing_ip })
 
         status = interface_manager.check_wan_status('ppp0')
 
@@ -223,7 +231,8 @@ RSpec.describe MacRouterUtils::InterfaceManager do
       end
 
       it 'correctly identifies active PPP interface with IP but no destination' do
-        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true, stdout: ppp_with_ip_without_dest })
+        allow(interface_manager).to receive(:execute_command_with_output).and_return({ success: true,
+stdout: ppp_with_ip_without_dest })
 
         status = interface_manager.check_wan_status('ppp0')
 
@@ -247,8 +256,8 @@ RSpec.describe MacRouterUtils::InterfaceManager do
           	status: active
         INTERFACE
 
-        allow(Open3).to receive(:capture3).and_return([interface_with_ip, "", double(success?: true)])
-        
+        allow(Open3).to receive(:capture3).and_return([interface_with_ip, '', double(success?: true)])
+
         expect(interface_manager.verify_configured).to be true
       end
     end
@@ -265,8 +274,8 @@ RSpec.describe MacRouterUtils::InterfaceManager do
           	status: active
         INTERFACE
 
-        allow(Open3).to receive(:capture3).and_return([interface_wrong_ip, "", double(success?: true)])
-        
+        allow(Open3).to receive(:capture3).and_return([interface_wrong_ip, '', double(success?: true)])
+
         expect(interface_manager.verify_configured).to be false
       end
     end
@@ -274,17 +283,15 @@ RSpec.describe MacRouterUtils::InterfaceManager do
 
   describe 'regex patterns for ifconfig parsing' do
     it 'extracts IP addresses correctly' do
-      ip_pattern = /inet (\d+\.\d+\.\d+\.\d+)/
-      
       # Test en0 IP extraction
       en0_match = ifconfig_output.match(/en0:.*?inet (\d+\.\d+\.\d+\.\d+)/m)
-      
+
       expect(en0_match).not_to be_nil
       expect(en0_match[1]).to eq('192.168.3.2')
-      
+
       # Test en5 IP extraction
       en5_match = ifconfig_output.match(/en5:.*?inet (\d+\.\d+\.\d+\.\d+)/m)
-      
+
       expect(en5_match).not_to be_nil
       expect(en5_match[1]).to eq('192.168.100.1')
     end
@@ -292,7 +299,7 @@ RSpec.describe MacRouterUtils::InterfaceManager do
     it 'detects interface status correctly' do
       # Test active interface detection
       expect(ifconfig_output).to match(/en0:.*?status: active/m)
-      
+
       # Test inactive interface detection
       expect(ifconfig_output).to match(/anpi1:.*?status: inactive/m)
     end

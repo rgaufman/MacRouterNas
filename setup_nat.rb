@@ -54,7 +54,7 @@ class NatSetup < MacRouterUtils::SetupBase
 
     # Check for mutually exclusive options
     if @options[:only_dhcp] && @options[:only_nat]
-      raise ArgumentError, "Cannot use both --only-dhcp and --only-nat options together"
+      raise ArgumentError, 'Cannot use both --only-dhcp and --only-nat options together'
     end
 
     validate_required_options! unless skip_validation
@@ -68,7 +68,7 @@ class NatSetup < MacRouterUtils::SetupBase
     @options[:remove_static_mappings] ||= []
     @options[:add_port_forwards] ||= []
     @options[:remove_port_forwards] ||= []
-    @options[:dns_cache_size] ||= 10000
+    @options[:dns_cache_size] ||= 10_000
     @options[:dns_min_ttl] ||= 60
     @options[:dns_max_ttl] ||= 3600
     @options[:dns_servers] ||= []
@@ -128,7 +128,7 @@ class NatSetup < MacRouterUtils::SetupBase
         logger.info 'Updating DNS blacklists...'
         blacklist_dir = File.join(File.dirname(__FILE__), 'blacklists')
         whitelist_path = File.join(blacklist_dir, 'whitelist.txt')
-        FileUtils.mkdir_p(blacklist_dir) unless Dir.exist?(blacklist_dir)
+        FileUtils.mkdir_p(blacklist_dir)
         blacklist_update_cmd = File.join(File.dirname(__FILE__), 'utils/update_blacklists.rb')
         blacklist_update_cmd += " --verbose --whitelist #{whitelist_path} --output /opt/homebrew/etc/dnsmasq.blacklist"
         # Use sudo to ensure we can write to the destination directory
@@ -137,7 +137,7 @@ class NatSetup < MacRouterUtils::SetupBase
           logger.info 'DNS blacklists updated successfully'
         else
           logger.warn "Failed to update DNS blacklists: #{update_result[:stderr]}"
-          logger.warn "Will continue setup with existing or default blacklists"
+          logger.warn 'Will continue setup with existing or default blacklists'
         end
 
         dnsmasq_manager.configure(false) # false = not in nat_only_mode
@@ -212,35 +212,33 @@ class NatSetup < MacRouterUtils::SetupBase
   end
 
   def list_port_forwards
-    begin
-      port_forwards = pf_manager.list_port_forwards
+    port_forwards = pf_manager.list_port_forwards
 
-      if port_forwards.empty?
-        puts "\nNo port forwarding rules configured."
-        return
-      end
-
-      puts "\nCurrent Port Forwarding Rules:"
-      puts "============================"
-      puts "External Port | Protocol | Internal IP      | Internal Port"
-      puts "--------------------------------------------------------"
-
-      port_forwards.each do |rule|
-        puts sprintf("%-13s | %-8s | %-16s | %s",
-                    rule['external_port'],
-                    rule['protocol'],
-                    rule['internal_ip'],
-                    rule['internal_port'])
-      end
-    rescue StandardError => e
-      logger.error "Failed to list port forwards: #{e.message}", exception: e
-      exit(1)
+    if port_forwards.empty?
+      puts "\nNo port forwarding rules configured."
+      return
     end
+
+    puts "\nCurrent Port Forwarding Rules:"
+    puts '============================'
+    puts 'External Port | Protocol | Internal IP      | Internal Port'
+    puts '--------------------------------------------------------'
+
+    port_forwards.each do |rule|
+      puts format('%-13s | %-8s | %-16s | %s',
+                  rule['external_port'],
+                  rule['protocol'],
+                  rule['internal_ip'],
+                  rule['internal_port'])
+    end
+  rescue StandardError => e
+    logger.error "Failed to list port forwards: #{e.message}", exception: e
+    exit(1)
   end
 
   def list_dhcp_leases
     puts "\nCurrent DHCP Leases:"
-    puts "==================="
+    puts '==================='
 
     # Check for dnsmasq leases file in various possible locations
     possible_lease_locations = [
@@ -253,7 +251,7 @@ class NatSetup < MacRouterUtils::SetupBase
     leases_file = possible_lease_locations.find { |path| File.exist?(path) }
 
     unless leases_file
-      puts "No DHCP leases file found in standard locations."
+      puts 'No DHCP leases file found in standard locations.'
 
       # Try to detect where dnsmasq might be storing leases
       dnsmasq_cmd = execute_command_with_output('ps aux | grep dnsmasq | grep -v grep')
@@ -269,11 +267,11 @@ class NatSetup < MacRouterUtils::SetupBase
           if File.exist?(custom_lease_file)
             leases_file = custom_lease_file
           else
-            puts "Custom lease file not found or empty."
+            puts 'Custom lease file not found or empty.'
           end
         end
       else
-        puts "No dnsmasq process found running."
+        puts 'No dnsmasq process found running.'
       end
 
       return unless leases_file
@@ -282,15 +280,15 @@ class NatSetup < MacRouterUtils::SetupBase
     # Read and display leases
     leases = File.readlines(leases_file)
     if leases.empty?
-      puts "No active DHCP leases found."
+      puts 'No active DHCP leases found.'
     else
       # Display header
-      puts "Expiry Time          MAC Address        IP Address      Hostname"
-      puts "--------------------------------------------------------------------"
+      puts 'Expiry Time          MAC Address        IP Address      Hostname'
+      puts '--------------------------------------------------------------------'
 
       # Process each lease
       leases.each do |lease|
-        fields = lease.strip.split(' ')
+        fields = lease.strip.split
         next if fields.size < 4
 
         # Parse fields - format varies slightly between versions
@@ -319,12 +317,12 @@ class NatSetup < MacRouterUtils::SetupBase
     log_file = '/opt/homebrew/var/log/dnsmasq.log'
     if File.exist?(log_file)
       puts "\nRecent DHCP activity from log (last 20 lines):"
-      puts "-" * 60
+      puts '-' * 60
       recent_logs = execute_command_with_output("grep -i dhcp #{log_file} | tail -n 20")
       if recent_logs[:success] && !recent_logs[:stdout].empty?
         puts recent_logs[:stdout]
       else
-        puts "No recent DHCP activity found in logs."
+        puts 'No recent DHCP activity found in logs.'
       end
       puts "\nLog file location: #{log_file}"
     else
@@ -334,7 +332,7 @@ class NatSetup < MacRouterUtils::SetupBase
       if syslog_check[:success] && !syslog_check[:stdout].empty?
         puts syslog_check[:stdout]
       else
-        puts "No DNSMASQ DHCP activity found in system logs."
+        puts 'No DNSMASQ DHCP activity found in system logs.'
       end
     end
   rescue StandardError => e
@@ -367,23 +365,21 @@ class NatSetup < MacRouterUtils::SetupBase
 
           # Check if Internet Sharing is actually active by checking for bootpd process
           bootpd_check = execute_command_with_output('ps aux | grep bootpd | grep -v grep')
-          if bootpd_check[:success] && !bootpd_check[:stdout].empty?
-            verified_internet_sharing = true
-          end
+          verified_internet_sharing = true if bootpd_check[:success] && !bootpd_check[:stdout].empty?
 
           if verified_internet_sharing
             puts "#{status_indicator} IP Forwarding: Effectively enabled via Internet Sharing"
-            puts "   Note: sysctl setting shows disabled, but Internet Sharing is active"
+            puts '   Note: sysctl setting shows disabled, but Internet Sharing is active'
           else
             # This fixes the false positive after uninstallation
-            puts "❌ IP Forwarding: Disabled"
-            puts "   Note: Internet Sharing setting appears enabled but service is not running"
+            puts '❌ IP Forwarding: Disabled'
+            puts '   Note: Internet Sharing setting appears enabled but service is not running'
           end
         elsif ip_forwarding_status[:nat_traffic_detected]
           puts "#{status_indicator} IP Forwarding: Effectively enabled (NAT traffic detected)"
-          puts "   Note: sysctl setting shows disabled, but NAT traffic is flowing"
+          puts '   Note: sysctl setting shows disabled, but NAT traffic is flowing'
         else
-          puts "❌ IP Forwarding: Disabled"
+          puts '❌ IP Forwarding: Disabled'
         end
 
         # Show information about persistent configuration
@@ -391,9 +387,9 @@ class NatSetup < MacRouterUtils::SetupBase
           persistent_status = ip_forwarding_status[:persistent_active] ? '✅' : '⚠️'
           puts "#{persistent_status} IP Forwarding Persistence: Configured#{ip_forwarding_status[:persistent_active] ? ' and active' : ' but not active'}"
         elsif ip_forwarding_status[:internet_sharing_active] && verified_internet_sharing
-          puts "✅ IP Forwarding Persistence: Managed by Internet Sharing"
+          puts '✅ IP Forwarding Persistence: Managed by Internet Sharing'
         else
-          puts "❌ IP Forwarding Persistence: Not configured"
+          puts '❌ IP Forwarding Persistence: Not configured'
         end
       else
         # For backward compatibility (if status is a boolean)
@@ -412,7 +408,7 @@ class NatSetup < MacRouterUtils::SetupBase
         nat_all_check = execute_command_with_output('sudo pfctl -s all | grep nat')
 
         nat_rules_active = (nat_rules_check[:success] && !nat_rules_check[:stdout].empty?) ||
-                          (nat_all_check[:success] && !nat_all_check[:stdout].empty?)
+                           (nat_all_check[:success] && !nat_all_check[:stdout].empty?)
 
         # For Internet Sharing, also check if bootpd is running
         internet_sharing_active = false
@@ -427,14 +423,14 @@ class NatSetup < MacRouterUtils::SetupBase
 
           # Show who is managing NAT
           if pf_status[:managed_by_us]
-            puts "   - Managed by: This application (MacRouterNas)"
+            puts '   - Managed by: This application (MacRouterNas)'
             puts "   - Anchor file: #{pf_status[:anchor]}" if pf_status[:anchor]
           elsif pf_status[:internet_sharing_enabled] && internet_sharing_active
-            puts "   - Managed by: macOS Internet Sharing"
+            puts '   - Managed by: macOS Internet Sharing'
           elsif pf_status[:managed_by_system]
-            puts "   - Managed by: System or other application"
+            puts '   - Managed by: System or other application'
           else
-            puts "   - Managed by: Unknown"
+            puts '   - Managed by: Unknown'
           end
 
           # Show interface information
@@ -472,7 +468,7 @@ class NatSetup < MacRouterUtils::SetupBase
           puts "   - Max TTL: #{dnsmasq_status[:max_ttl] || 'Default'} seconds"
 
           if dnsmasq_status[:dns_servers] && !dnsmasq_status[:dns_servers].empty?
-            puts "   - DNS Servers:"
+            puts '   - DNS Servers:'
             dnsmasq_status[:dns_servers].each do |server|
               puts "     * #{server}"
             end
@@ -580,18 +576,16 @@ class NatSetup < MacRouterUtils::SetupBase
       return if @options[:lan_interface]
 
       logger.fatal 'LAN interface is required even with --only-dhcp option'
-      exit(1)
     elsif @options[:only_nat]
       return if @options[:wan_interface] && @options[:lan_interface]
 
       logger.fatal 'Both WAN and LAN interfaces are required for NAT-only setup'
-      exit(1)
     else
       return if @options[:wan_interface] && @options[:lan_interface]
 
       logger.fatal 'Both WAN and LAN interfaces are required for NAT setup'
-      exit(1)
     end
+    exit(1)
   end
 
   def verify_services
@@ -618,19 +612,19 @@ class NatSetup < MacRouterUtils::SetupBase
       if File.exist?(MacRouterUtils::DNSMasqManager::DNSMASQ_CONF)
         config_content = File.read(MacRouterUtils::DNSMasqManager::DNSMASQ_CONF)
         logger.error "DNSMASQ config exists at #{MacRouterUtils::DNSMasqManager::DNSMASQ_CONF}:"
-        logger.error "---CONFIG START---"
+        logger.error '---CONFIG START---'
         logger.error config_content
-        logger.error "---CONFIG END---"
+        logger.error '---CONFIG END---'
 
         # Check file permissions
         permissions = execute_command_with_output("ls -la #{MacRouterUtils::DNSMasqManager::DNSMASQ_CONF}")
         logger.error "File permissions: #{permissions[:stdout]}"
       else
-        logger.error "DNSMASQ config file not found!"
+        logger.error 'DNSMASQ config file not found!'
       end
 
       # Check if we can manually start the service
-      logger.error "Attempting to manually start DNSMASQ..."
+      logger.error 'Attempting to manually start DNSMASQ...'
       manual_start = execute_command_with_output('sudo brew services start dnsmasq')
       logger.error "Manual start result: #{manual_start[:stdout]} #{manual_start[:stderr]}"
 
@@ -657,25 +651,29 @@ class NatSetup < MacRouterUtils::SetupBase
 
     # Step 1: Check IP forwarding status
     ip_forwarding_status = sysctl_manager.check_status
-    logger.info "IP Forwarding status: #{ip_forwarding_status.is_a?(Hash) ? (ip_forwarding_status[:effective_enabled] ? 'Enabled' : 'Disabled') : ip_forwarding_status.to_s}"
+    logger.info "IP Forwarding status: #{if ip_forwarding_status.is_a?(Hash)
+                                           ip_forwarding_status[:effective_enabled] ? 'Enabled' : 'Disabled'
+                                         else
+                                           ip_forwarding_status.to_s
+                                         end}"
 
     # Step 2: Check for Internet Sharing
     internet_sharing = execute_command_with_output('defaults read /Library/Preferences/SystemConfiguration/com.apple.nat 2>/dev/null | grep -i enabled')
     internet_sharing_enabled = internet_sharing[:success] && internet_sharing[:stdout].include?('Enabled = 1')
     if internet_sharing_enabled
-      logger.info "Internet Sharing: Enabled in system preferences"
+      logger.info 'Internet Sharing: Enabled in system preferences'
 
       # Check if Internet Sharing is actually active (bootpd running)
       bootpd_check = execute_command_with_output('ps aux | grep bootpd | grep -v grep')
       internet_sharing_active = bootpd_check[:success] && !bootpd_check[:stdout].empty?
 
       if internet_sharing_active
-        logger.info "Internet Sharing: Active (bootpd is running)"
+        logger.info 'Internet Sharing: Active (bootpd is running)'
       else
-        logger.warn "Internet Sharing: Enabled in preferences but not fully active (bootpd not running)"
+        logger.warn 'Internet Sharing: Enabled in preferences but not fully active (bootpd not running)'
       end
     else
-      logger.info "Internet Sharing: Not enabled"
+      logger.info 'Internet Sharing: Not enabled'
     end
 
     # Step 3: Check for PF NAT rules
@@ -683,10 +681,10 @@ class NatSetup < MacRouterUtils::SetupBase
     has_nat_rules = nat_rule_check[:success] && !nat_rule_check[:stdout].strip.empty?
 
     if has_nat_rules
-      logger.info "PF NAT rules: Found"
+      logger.info 'PF NAT rules: Found'
       logger.info "NAT rules detected: #{nat_rule_check[:stdout].strip}"
     else
-      logger.warn "PF NAT rules: None found"
+      logger.warn 'PF NAT rules: None found'
     end
 
     # Step 4: Check PF status
@@ -694,16 +692,16 @@ class NatSetup < MacRouterUtils::SetupBase
     pf_enabled = pf_status[:success] && pf_status[:stdout].include?('Enabled')
 
     if pf_enabled
-      logger.info "PF status: Enabled"
+      logger.info 'PF status: Enabled'
     else
-      logger.error "PF status: Disabled - PF must be enabled for NAT to work!"
+      logger.error 'PF status: Disabled - PF must be enabled for NAT to work!'
 
       # Try to enable PF if it's disabled
       if @force
-        logger.warn "Force mode enabled - Attempting to enable PF..."
+        logger.warn 'Force mode enabled - Attempting to enable PF...'
         enable_result = execute_command_with_output('sudo pfctl -e')
         if enable_result[:success]
-          logger.info "Successfully enabled PF"
+          logger.info 'Successfully enabled PF'
           pf_enabled = true
         end
       end
@@ -717,63 +715,59 @@ class NatSetup < MacRouterUtils::SetupBase
       if pf_enabled && has_nat_rules
         # Ideal scenario: IP forwarding + PF enabled + NAT rules
         nat_working = true
-        logger.info "NAT status: ✅ Fully configured and active"
+        logger.info 'NAT status: ✅ Fully configured and active'
       elsif internet_sharing_active
         # Internet Sharing handles both IP forwarding and NAT
         nat_working = true
-        logger.info "NAT status: ✅ Active via Internet Sharing"
+        logger.info 'NAT status: ✅ Active via Internet Sharing'
       else
         # IP forwarding enabled but NAT might not be working
-        logger.warn "NAT status: ⚠️ IP forwarding enabled but NAT configuration is incomplete"
+        logger.warn 'NAT status: ⚠️ IP forwarding enabled but NAT configuration is incomplete'
       end
-    else
+    elsif pf_enabled && has_nat_rules && @force
       # IP forwarding not enabled explicitly
-      if pf_enabled && has_nat_rules && @force
-        # In force mode, trust that NAT is working even without explicit IP forwarding
-        nat_working = true
-        logger.warn "NAT status: ⚠️ PF and NAT rules found, but IP forwarding not explicitly enabled"
-        logger.warn "Proceeding anyway due to force mode..."
-      else
-        # NAT can't work without IP forwarding
-        logger.error "NAT status: ❌ Not working - IP forwarding is disabled"
-      end
+      nat_working = true
+      logger.warn 'NAT status: ⚠️ PF and NAT rules found, but IP forwarding not explicitly enabled'
+      logger.warn 'Proceeding anyway due to force mode...'
+    # In force mode, trust that NAT is working even without explicit IP forwarding
+    else
+      # NAT can't work without IP forwarding
+      logger.error 'NAT status: ❌ Not working - IP forwarding is disabled'
     end
 
     # Step 6: Check interface configuration
     interface_status = interface_manager.verify_configured
     if interface_status
-      logger.info "LAN interface configuration: ✅ Properly configured with static IP"
+      logger.info 'LAN interface configuration: ✅ Properly configured with static IP'
     else
       # Get detailed interface info for troubleshooting
       interface_info = execute_command_with_output("ifconfig #{@options[:lan_interface]}")
-      logger.error "LAN interface configuration: ❌ Not properly configured"
+      logger.error 'LAN interface configuration: ❌ Not properly configured'
       logger.error "Interface details: #{interface_info[:stdout]}"
 
-      if @force
-        logger.warn "Force mode enabled - Continuing despite interface configuration failure"
-      else
-        raise 'Interface configuration failed'
-      end
+      raise 'Interface configuration failed' unless @force
+
+      logger.warn 'Force mode enabled - Continuing despite interface configuration failure'
+
     end
 
     # Step 7: Final assessment
     if @options[:only_nat]
       # For NAT-only mode, be more lenient
       if nat_working || internet_sharing_active || (pf_enabled && has_nat_rules)
-        logger.info "NAT-only mode: NAT appears to be working"
+        logger.info 'NAT-only mode: NAT appears to be working'
       else
-        logger.warn "NAT-only mode: NAT configuration may be incomplete, but continuing anyway"
+        logger.warn 'NAT-only mode: NAT configuration may be incomplete, but continuing anyway'
         # In NAT-only mode, don't fail even if NAT is not detected
       end
     else
       # For full setup, be stricter
       unless nat_working || (pf_enabled && has_nat_rules) || internet_sharing_active
-        error_msg = "NAT not functioning properly. Ensure IP forwarding is enabled and PF is configured."
-        if @force
-          logger.warn "#{error_msg} Continuing anyway due to force mode..."
-        else
-          raise error_msg
-        end
+        error_msg = 'NAT not functioning properly. Ensure IP forwarding is enabled and PF is configured.'
+        raise error_msg unless @force
+
+        logger.warn "#{error_msg} Continuing anyway due to force mode..."
+
       end
     end
 
@@ -823,7 +817,9 @@ class NatCLI < MacRouterUtils::CLIBase
       opts.on('--wan-interface NAME', 'WAN interface (e.g., ppp0)') { |v| @options[:wan_interface] = v }
       opts.on('--lan-interface NAME', 'LAN interface (e.g., en8)') { |v| @options[:lan_interface] = v }
       opts.on('--static-ip IP', 'Static IP for LAN interface') { |v| @options[:static_ip] = v }
-      opts.on('--lan-subnet SUBNET', 'LAN subnet in CIDR notation (e.g., 192.168.1.0/24)') { |v| @options[:lan_subnet] = v }
+      opts.on('--lan-subnet SUBNET', 'LAN subnet in CIDR notation (e.g., 192.168.1.0/24)') do |v|
+        @options[:lan_subnet] = v
+      end
       opts.on('--dhcp-range RANGE', 'DHCP range in format "start,end,lease_time"',
               'Example: 192.168.1.11,192.168.1.249,4h', # This is the default
               'Lease time can be in seconds or with a suffix: m (minutes), h (hours), d (days)') do |v|
@@ -835,11 +831,19 @@ class NatCLI < MacRouterUtils::CLIBase
         @options[:dns_servers] ||= []
         @options[:dns_servers] << v
       end
-      opts.on('--dns-cache-size SIZE', Integer, 'Size of the DNS cache (default: 10000)') { |v| @options[:dns_cache_size] = v }
-      opts.on('--dns-min-ttl SECONDS', Integer, 'Minimum TTL for cached DNS entries in seconds (default: 60)') { |v| @options[:dns_min_ttl] = v }
-      opts.on('--dns-max-ttl SECONDS', Integer, 'Maximum TTL for cached DNS entries in seconds (default: 3600)') { |v| @options[:dns_max_ttl] = v }
+      opts.on('--dns-cache-size SIZE', Integer, 'Size of the DNS cache (default: 10000)') do |v|
+        @options[:dns_cache_size] = v
+      end
+      opts.on('--dns-min-ttl SECONDS', Integer, 'Minimum TTL for cached DNS entries in seconds (default: 60)') do |v|
+        @options[:dns_min_ttl] = v
+      end
+      opts.on('--dns-max-ttl SECONDS', Integer, 'Maximum TTL for cached DNS entries in seconds (default: 3600)') do |v|
+        @options[:dns_max_ttl] = v
+      end
       opts.on('--only-dhcp', 'Set up only the DHCP server (no NAT)') { @options[:only_dhcp] = true }
-      opts.on('--only-nat', 'Set up only NAT (no DHCP server, works with Internet Sharing)') { @options[:only_nat] = true }
+      opts.on('--only-nat', 'Set up only NAT (no DHCP server, works with Internet Sharing)') do
+        @options[:only_nat] = true
+      end
       opts.on('--force', 'Force restart of services even if already running') { @options[:force] = true }
 
       # Static mapping options
@@ -922,12 +926,10 @@ begin
   if options[:add_port_forwards].any? || options[:remove_port_forwards].any? || options[:list_port_forwards]
     # Ensure WAN interface is specified for port forwarding
     unless options[:wan_interface]
-      logger.error("WAN interface (--wan-interface) is required for port forwarding operations")
+      logger.error('WAN interface (--wan-interface) is required for port forwarding operations')
       exit(1)
     end
-    if options[:list_port_forwards]
-      nat_setup.list_port_forwards
-    end
+    nat_setup.list_port_forwards if options[:list_port_forwards]
 
     # Add and remove port forwards if needed
     if options[:add_port_forwards].any? || options[:remove_port_forwards].any?
@@ -981,9 +983,7 @@ begin
     end
 
     # If we're only doing port forwarding operations and not setting up NAT
-    if !options[:status] && !options[:uninstall]
-      exit(0)
-    end
+    exit(0) if !options[:status] && !options[:uninstall]
   end
 
   # Run appropriate action based on options
@@ -994,32 +994,32 @@ begin
   elsif options[:flush_dns_cache]
     # Create a DNSMasqManager directly without going through NatSetup
     dns_manager = MacRouterUtils::DNSMasqManager.new(
-      'en8',  # Default LAN interface
-      '192.168.1.1',  # Default IP
-      '192.168.1.11,192.168.1.249,4h',  # Default range
-      'local',  # Default domain
-      '1.1.1.1',  # Default DNS
+      'en8', # Default LAN interface
+      '192.168.1.1', # Default IP
+      '192.168.1.11,192.168.1.249,4h', # Default range
+      'local', # Default domain
+      '1.1.1.1', # Default DNS
       [],  # No static mappings
       [],  # No removals
-      false  # Don't force
+      false # Don't force
     )
     if dns_manager.flush_dns_cache
-      puts "DNS cache flushed successfully"
+      puts 'DNS cache flushed successfully'
     else
-      puts "Failed to flush DNS cache"
+      puts 'Failed to flush DNS cache'
       exit(1)
     end
   elsif options[:dns_stats]
     # Create a DNSMasqManager directly without going through NatSetup
     dns_manager = MacRouterUtils::DNSMasqManager.new(
-      'en8',  # Default LAN interface
-      '192.168.1.1',  # Default IP
-      '192.168.1.11,192.168.1.249,4h',  # Default range
-      'local',  # Default domain
-      '1.1.1.1',  # Default DNS
+      'en8', # Default LAN interface
+      '192.168.1.1', # Default IP
+      '192.168.1.11,192.168.1.249,4h', # Default range
+      'local', # Default domain
+      '1.1.1.1', # Default DNS
       [],  # No static mappings
       [],  # No removals
-      false  # Don't force
+      false # Don't force
     )
     dns_manager.show_dns_stats
   else

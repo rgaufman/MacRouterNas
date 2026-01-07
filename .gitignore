@@ -62,3 +62,7 @@ build-iPhoneSimulator/
 
 **/.claude/settings.local.json
 miniupnp/
+
+# Project logs
+log/
+*.log

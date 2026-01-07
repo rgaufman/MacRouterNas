@@ -7,10 +7,16 @@
 require 'semantic_logger'
 require 'open3'
 require 'fileutils'
+require 'tty-command'
 
 module MacRouterUtils
   class SystemManager
     include SemanticLogger::Loggable
+
+    # Get a TTY::Command instance for better command execution
+    def cmd
+      @cmd ||= TTY::Command.new(printer: :null)
+    end
 
     # Persistent system location for configurations - available at boot time
     PERSISTENT_CONFIG_DIR = '/usr/local/etc/MacRouterNas'
@@ -28,12 +34,12 @@ module MacRouterUtils
       return if is_uninstall_operation?
 
       logger.info "Creating persistent config directory: #{PERSISTENT_CONFIG_DIR}"
-      result = execute_command_with_output("sudo mkdir -p #{PERSISTENT_CONFIG_DIR}")
+      result = shell("sudo mkdir -p #{PERSISTENT_CONFIG_DIR}")
 
       if result[:success]
         # Set permissions to allow our process to write to it
-        execute_command_with_output("sudo chmod 755 #{PERSISTENT_CONFIG_DIR}")
-        logger.info "Created persistent config directory successfully"
+        shell("sudo chmod 755 #{PERSISTENT_CONFIG_DIR}")
+        logger.info 'Created persistent config directory successfully'
       else
         logger.warn "Failed to create persistent config directory: #{result[:stderr]}"
       end
@@ -52,18 +58,16 @@ module MacRouterUtils
       logger.info "Removing persistent config directory: #{PERSISTENT_CONFIG_DIR}"
 
       # List files before deletion for debugging
-      files = execute_command_with_output("ls -la #{PERSISTENT_CONFIG_DIR}")
-      if files[:success]
-        logger.debug "Files in persistent directory before deletion: #{files[:stdout]}"
-      end
+      files = shell("ls -la #{PERSISTENT_CONFIG_DIR}")
+      logger.debug "Files in persistent directory before deletion: #{files[:stdout]}" if files[:success]
 
       # Remove the directory and its contents
-      rmdir_result = execute_command_with_output("sudo rm -rf #{PERSISTENT_CONFIG_DIR}")
+      rmdir_result = shell("sudo rm -rf #{PERSISTENT_CONFIG_DIR}")
 
-      if !rmdir_result[:success]
-        logger.warn "Failed to remove persistent configuration directory: #{rmdir_result[:stderr]}"
+      if rmdir_result[:success]
+        logger.info 'Successfully removed persistent configuration directory'
       else
-        logger.info "Successfully removed persistent configuration directory"
+        logger.warn "Failed to remove persistent configuration directory: #{rmdir_result[:stderr]}"
       end
     end
 
@@ -84,23 +88,23 @@ module MacRouterUtils
         File.write(temp_file, content)
 
         # Copy to persistent location with sudo
-        result = execute_command_with_output("sudo cp #{temp_file} #{config_path}")
+        result = shell("sudo cp #{temp_file} #{config_path}")
 
         if result[:success]
           # Set appropriate permissions
-          execute_command_with_output("sudo chmod 644 #{config_path}")
+          shell("sudo chmod 644 #{config_path}")
           logger.info "Stored configuration file in persistent location: #{config_path}"
-          return config_path
+          config_path
         else
           logger.error "Failed to store configuration in persistent location: #{result[:stderr]}"
-          return nil
+          nil
         end
       rescue StandardError => e
         logger.error "Error storing configuration in persistent location: #{e.message}"
-        return nil
+        nil
       ensure
         # Clean up the temporary file
-        File.unlink(temp_file) if File.exist?(temp_file)
+        FileUtils.rm_f(temp_file)
       end
     end
 
@@ -110,15 +114,14 @@ module MacRouterUtils
 
       if File.exist?(config_path)
         begin
-          content = File.read(config_path)
-          return content
+          File.read(config_path)
         rescue StandardError => e
           logger.error "Error reading from persistent location: #{e.message}"
-          return nil
+          nil
         end
       else
         logger.warn "Configuration file not found in persistent location: #{config_path}"
-        return nil
+        nil
       end
     end
 
@@ -141,9 +144,16 @@ module MacRouterUtils
       end
     end
 
-    def execute_command_with_output(command)
-      stdout, stderr, status = Open3.capture3(command)
-      { success: status.success?, stdout: stdout, stderr: stderr }
+    # Execute a shell command and return the result
+    # By default, raises an exception on failure (fail loudly)
+    # Set raise_on_failure: false to allow failures
+    def shell(command, raise_on_failure: true)
+      result = cmd.run(command)
+      { success: true, stdout: result.out, stderr: result.err }
+    rescue TTY::Command::ExitError => e
+      raise "Command failed: #{command}\nError: #{e.message}" if raise_on_failure
+
+      { success: false, stdout: e.message, stderr: e.message }
     end
   end
 end

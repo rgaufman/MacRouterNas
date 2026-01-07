@@ -14,7 +14,7 @@ module MacRouterUtils
   class PortForwards < SystemManager
     # Define constants
     # Use user's home directory instead of system directories to avoid permission issues
-    PORT_FORWARDS_FILE = ENV['HOME'] + '/.config/macrouternas/port_forwards.json'
+    PORT_FORWARDS_FILE = "#{Dir.home}/.config/macrouternas/port_forwards.json".freeze
 
     # Class for port forwarding errors
     class PortForwardError < StandardError; end
@@ -38,7 +38,7 @@ module MacRouterUtils
       # Special handling for 'both' protocol
       if protocol.downcase == 'both'
         # Add both TCP and UDP rules
-        ['tcp', 'udp'].each do |single_protocol|
+        %w[tcp udp].each do |single_protocol|
           add_single_protocol_forward(port_forwards, external_port, internal_ip, internal_port, single_protocol)
         end
         logger.info "Added port forwarding rule for both TCP and UDP: #{external_port} -> #{internal_ip}:#{internal_port}"
@@ -54,7 +54,9 @@ module MacRouterUtils
     # Helper to add a single protocol rule
     def add_single_protocol_forward(port_forwards, external_port, internal_ip, internal_port, protocol)
       # Check if a rule with the same external port and protocol already exists
-      existing_rule_index = port_forwards.find_index { |r| r['external_port'] == external_port && r['protocol'] == protocol }
+      existing_rule_index = port_forwards.find_index do |r|
+        r['external_port'] == external_port && r['protocol'] == protocol
+      end
 
       if existing_rule_index
         # If we're updating an existing rule, replace it
@@ -95,20 +97,19 @@ module MacRouterUtils
           logger.info "Removed port forwarding rule(s) for both TCP and UDP: #{external_port}"
           save_port_forwards(port_forwards)
           apply_port_forwards
-          return true
+          true
         else
           logger.warn "No port forwarding rules found for TCP or UDP on port #{external_port}"
-          return false
+          false
         end
       else
         # Remove a single protocol rule
-        if remove_single_protocol_forward(port_forwards, external_port, protocol)
-          save_port_forwards(port_forwards)
-          apply_port_forwards
-          return true
-        else
-          return false
-        end
+        return false unless remove_single_protocol_forward(port_forwards, external_port, protocol)
+
+        save_port_forwards(port_forwards)
+        apply_port_forwards
+        true
+
       end
     end
 
@@ -119,17 +120,16 @@ module MacRouterUtils
 
       if port_forwards.length < original_count
         logger.info "Removed port forwarding rule: #{protocol} #{external_port}"
-        return true
+        true
       else
         logger.warn "No port forwarding rule found for #{protocol} #{external_port}"
-        return false
+        false
       end
     end
 
     # List all port forwarding rules
     def list_port_forwards
-      port_forwards = load_port_forwards
-      return port_forwards
+      load_port_forwards
     end
 
     # Apply all port forwarding rules to pf
@@ -151,29 +151,29 @@ module MacRouterUtils
 
         # Write the rules to the temporary file
         File.write(tmp_path, rules_content)
-        FileUtils.chmod(0600, tmp_path) # Only owner can read/write
+        FileUtils.chmod(0o600, tmp_path) # Only owner can read/write
 
         # Also save to a persistent location for the LaunchDaemon to find
         rules_dir = File.dirname(PORT_FORWARDS_FILE)
         begin
-          FileUtils.mkdir_p(rules_dir) unless Dir.exist?(rules_dir)
+          FileUtils.mkdir_p(rules_dir)
           File.write("#{rules_dir}/port_forwards_rules.conf", rules_content)
         rescue StandardError => e
           logger.warn "Failed to save persistent rules file: #{e.message}"
         end
 
         # Get current NAT rules to combine with port forwarding
-        nat_output = execute_command_with_output('sudo pfctl -s nat')
+        nat_output = shell('sudo pfctl -s nat')
 
         # Prepare combined rules (NAT + port forwarding)
-        combined_rules = ""
+        combined_rules = ''
         if nat_output[:success] && !nat_output[:stdout].empty?
           # Use existing NAT rules
-          combined_rules = nat_output[:stdout] + "\n\n" + rules_content
+          combined_rules = "#{nat_output[:stdout]}\n\n#{rules_content}"
         else
           # If no NAT rules found, use port forwarding rules only
           combined_rules = rules_content
-          logger.warn "No existing NAT rules found. Only applying port forwarding rules."
+          logger.warn 'No existing NAT rules found. Only applying port forwarding rules.'
         end
 
         # Create a temporary file for combined rules
@@ -182,13 +182,13 @@ module MacRouterUtils
         combined_tmp.close
 
         File.write(combined_path, combined_rules)
-        FileUtils.chmod(0600, combined_path)
+        FileUtils.chmod(0o600, combined_path)
 
         # Load the combined rules
-        load_result = execute_command_with_output("sudo pfctl -f #{combined_path}")
+        load_result = shell("sudo pfctl -f #{combined_path}")
 
         # Clean up combined rules temp file
-        File.unlink(combined_path) if File.exist?(combined_path)
+        FileUtils.rm_f(combined_path)
 
         # Check for errors
         if !load_result[:success] && !load_result[:stderr].include?('could result in flushing of rules')
@@ -197,10 +197,10 @@ module MacRouterUtils
         end
 
         logger.info "Applied #{port_forwards.length} port forwarding rules"
-        return true
+        true
       rescue StandardError => e
         logger.error "Failed to apply port forwarding rules: #{e.message}"
-        return false
+        false
       ensure
         # Clean up temporary file
         File.unlink(tmp_path) if tmp_path && File.exist?(tmp_path)
@@ -212,18 +212,16 @@ module MacRouterUtils
     # Create directory for port forwards file
     def create_port_forwards_directory
       directory = File.dirname(PORT_FORWARDS_FILE)
-      unless Dir.exist?(directory)
-        begin
-          # Try creating directory without sudo first
-          FileUtils.mkdir_p(directory)
-        rescue StandardError
-          # If that fails, use sudo
-          result = execute_command_with_output("sudo mkdir -p #{directory}")
-          result = execute_command_with_output("sudo chmod 755 #{directory}") if result[:success]
-          unless result[:success]
-            logger.warn "Failed to create port forwards directory: #{result[:stderr]}"
-          end
-        end
+      return if Dir.exist?(directory)
+
+      begin
+        # Try creating directory without sudo first
+        FileUtils.mkdir_p(directory)
+      rescue StandardError
+        # If that fails, use sudo
+        result = shell("sudo mkdir -p #{directory}")
+        result = shell("sudo chmod 755 #{directory}") if result[:success]
+        logger.warn "Failed to create port forwards directory: #{result[:stderr]}" unless result[:success]
       end
     end
 
@@ -243,39 +241,37 @@ module MacRouterUtils
 
     # Save port forwarding rules to file
     def save_port_forwards(rules)
-      begin
-        # Write to a temp file
-        tmp_file = Tempfile.new(['port_forwards', '.json'], '/tmp')
-        tmp_path = tmp_file.path
-        tmp_file.close
-        
-        File.write(tmp_path, JSON.pretty_generate(rules))
-        
-        # Use sudo to copy to final location
-        result = execute_command_with_output("sudo cp #{tmp_path} #{PORT_FORWARDS_FILE}")
-        result = execute_command_with_output("sudo chmod 644 #{PORT_FORWARDS_FILE}") if result[:success]
-        
-        unless result[:success]
-          logger.error "Failed to save port forwards file: #{result[:stderr]}"
-          return false
-        end
-        
-        return true
-      rescue StandardError => e
-        logger.error "Failed to save port forwards file: #{e.message}"
+      # Write to a temp file
+      tmp_file = Tempfile.new(['port_forwards', '.json'], '/tmp')
+      tmp_path = tmp_file.path
+      tmp_file.close
+
+      File.write(tmp_path, JSON.pretty_generate(rules))
+
+      # Use sudo to copy to final location
+      result = shell("sudo cp #{tmp_path} #{PORT_FORWARDS_FILE}")
+      result = shell("sudo chmod 644 #{PORT_FORWARDS_FILE}") if result[:success]
+
+      unless result[:success]
+        logger.error "Failed to save port forwards file: #{result[:stderr]}"
         return false
-      ensure
-        # Clean up temp file
-        File.unlink(tmp_path) if tmp_path && File.exist?(tmp_path)
       end
+
+      true
+    rescue StandardError => e
+      logger.error "Failed to save port forwards file: #{e.message}"
+      false
+    ensure
+      # Clean up temp file
+      File.unlink(tmp_path) if tmp_path && File.exist?(tmp_path)
     end
 
     # Validation methods
     def validate_port(port)
       port_num = port.to_i
-      unless port_num.between?(1, 65535)
-        raise PortForwardError, "Invalid port number: #{port}. Must be between 1-65535"
-      end
+      return if port_num.between?(1, 65_535)
+
+      raise PortForwardError, "Invalid port number: #{port}. Must be between 1-65535"
     end
 
     def validate_ip(ip)
@@ -283,7 +279,7 @@ module MacRouterUtils
       unless ip.match?(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
         raise PortForwardError, "Invalid IP address format: #{ip}"
       end
-      
+
       # Check each octet is within range
       octets = ip.split('.')
       octets.each do |octet|
@@ -294,9 +290,9 @@ module MacRouterUtils
     end
 
     def validate_protocol(protocol)
-      unless %w[tcp udp both].include?(protocol.downcase)
-        raise PortForwardError, "Invalid protocol: #{protocol}. Must be 'tcp', 'udp', or 'both'"
-      end
+      return if %w[tcp udp both].include?(protocol.downcase)
+
+      raise PortForwardError, "Invalid protocol: #{protocol}. Must be 'tcp', 'udp', or 'both'"
     end
   end
 end

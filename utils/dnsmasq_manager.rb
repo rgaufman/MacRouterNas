@@ -15,7 +15,8 @@ module MacRouterUtils
     RESOLV_CONF = '/etc/resolv.dnsmasq'
     DHCP_HOST_REGEX = /^dhcp-host=([^,]+),([^,]+),([^,\s]+)/
 
-    def initialize(lan, ip, dhcp_range, domain, dns, add_mappings = [], remove_mappings = [], force = false, dns_options = {})
+    def initialize(lan, ip, dhcp_range, domain, dns, add_mappings = [], remove_mappings = [], force = false,
+                   dns_options = {})
       @lan = lan
       @ip = ip
       @dhcp_range = dhcp_range
@@ -34,206 +35,205 @@ module MacRouterUtils
     end
 
     def configure(nat_only_mode = false)
-      begin
-        # First check if Internet Sharing is enabled
-        if internet_sharing_enabled?
-          if nat_only_mode || @force
-            # In NAT-only mode or force mode, just warn but continue
-            logger.warn "===== INTERNET SHARING DETECTED (CONTINUING ANYWAY) ====="
-            logger.warn "macOS Internet Sharing appears to be enabled, which normally conflicts"
-            logger.warn "with our DNSMASQ DHCP server."
-            logger.warn ""
-            if nat_only_mode
-              logger.warn "Since you're in NAT-only mode, we'll continue without starting DNSMASQ."
-              logger.warn "This allows your Internet Sharing to handle DHCP while we manage NAT."
-            else
-              logger.warn "Since you used --force, we'll attempt to continue despite the conflict."
-              logger.warn "This may cause DHCP issues if Internet Sharing is actually running."
-            end
-            logger.warn "================================================"
-
-            # In NAT-only mode, we actually want to skip DNSMASQ setup entirely
-            if nat_only_mode
-              logger.info "Skipping DNSMASQ configuration in NAT-only mode"
-              return true
-            end
+      # First check if Internet Sharing is enabled
+      if internet_sharing_enabled?
+        if nat_only_mode || @force
+          # In NAT-only mode or force mode, just warn but continue
+          logger.warn '===== INTERNET SHARING DETECTED (CONTINUING ANYWAY) ====='
+          logger.warn 'macOS Internet Sharing appears to be enabled, which normally conflicts'
+          logger.warn 'with our DNSMASQ DHCP server.'
+          logger.warn ''
+          if nat_only_mode
+            logger.warn "Since you're in NAT-only mode, we'll continue without starting DNSMASQ."
+            logger.warn 'This allows your Internet Sharing to handle DHCP while we manage NAT.'
           else
-            # In normal mode, error out
-            logger.error "===== INTERNET SHARING CONFLICT DETECTED ====="
-            logger.error "macOS Internet Sharing is currently enabled, which runs its own DHCP server (bootpd)."
-            logger.error "This will conflict with our DNSMASQ DHCP server and prevent it from starting."
-            logger.error ""
-            logger.error "Please disable Internet Sharing in System Settings > Sharing before continuing."
-            logger.error "After disabling Internet Sharing, try running this script again."
-            logger.error "Options:"
-            logger.error "1. Disable Internet Sharing and try again"
-            logger.error "2. Use --only-nat to skip DNSMASQ and just set up NAT"
-            logger.error "3. Use --force to attempt to continue anyway (not recommended)"
-            logger.error "================================================"
-            raise "Internet Sharing is enabled and will conflict with DNSMASQ DHCP server"
+            logger.warn "Since you used --force, we'll attempt to continue despite the conflict."
+            logger.warn 'This may cause DHCP issues if Internet Sharing is actually running.'
           end
-        end
+          logger.warn '================================================'
 
-        # First ensure dnsmasq is installed before any verification check
-        # This fixes the "config file missing" error on first run
-        ensure_dnsmasq_installed
-
-        # Set up directories first - this helps prevent verification failures
-        # on the first run when directories don't exist yet
-        FileUtils.mkdir_p(File.dirname(DNSMASQ_CONF))
-        execute_command_with_output('sudo mkdir -p /opt/homebrew/var/lib/misc')
-        execute_command_with_output('sudo mkdir -p /opt/homebrew/var/log')
-
-        # Now check if our DNSMASQ is already running with current config
-        is_running = verify_running
-        if is_running && !config_changed?
-          logger.info "DNSMASQ already running with current configuration, skipping reconfiguration"
-          return
-        end
-
-        # Process static mappings
-        process_static_mappings
-
-        # Ensure log file has proper permissions
-        execute_command_with_output('sudo touch /opt/homebrew/var/log/dnsmasq.log')
-
-        # Generate and write config using sudo
-        config_content = generate_config
-
-        # Write to a temporary file first
-        temp_conf = "/tmp/dnsmasq_config_#{Process.pid}.conf"
-        File.write(temp_conf, config_content)
-
-        # Use sudo to move it to the final location
-        execute_command("sudo cp #{temp_conf} #{DNSMASQ_CONF}", "Failed to write to #{DNSMASQ_CONF}")
-        execute_command("sudo chmod 644 #{DNSMASQ_CONF}", "Failed to set permissions on #{DNSMASQ_CONF}")
-        File.unlink(temp_conf) if File.exist?(temp_conf)
-
-        # Ensure log file permissions are set correctly
-        execute_command_with_output('sudo touch /opt/homebrew/var/log/dnsmasq.log')
-        execute_command_with_output('sudo chmod 644 /opt/homebrew/var/log/dnsmasq.log')
-        execute_command_with_output('sudo chown nobody /opt/homebrew/var/log/dnsmasq.log')
-
-        # Write resolv.conf with sudo since it's in a system directory
-        temp_file = '/tmp/resolv.dnsmasq.tmp'
-
-        # Support multiple DNS servers
-        resolv_content = ""
-        dns_servers = @dns_servers.is_a?(Array) ? @dns_servers : [@dns]
-
-        # Make sure we have at least one known working DNS server
-        if dns_servers.empty? || (dns_servers.size == 1 && dns_servers.first.nil?)
-          # Add reliable fallback DNS servers
-          dns_servers = ["1.1.1.1", "8.8.8.8"]
-          logger.info "Using default DNS servers: #{dns_servers.join(', ')}"
-        end
-
-        # Add each DNS server to resolv.conf
-        dns_servers.each do |server|
-          next unless server && !server.empty?
-          resolv_content += "nameserver #{server}\n"
-        end
-
-        # Add search domain if present
-        resolv_content += "search #{@domain}\n" if @domain && !@domain.empty?
-
-        logger.info "Setting up DNS resolvers: #{dns_servers.join(', ')}"
-        File.write(temp_file, resolv_content)
-        execute_command("sudo mv #{temp_file} #{RESOLV_CONF}", "Failed to write to #{RESOLV_CONF}")
-        execute_command("sudo chmod 644 #{RESOLV_CONF}", "Failed to set permissions on #{RESOLV_CONF}")
-
-        # If already running but config changed, just restart
-        if is_running
-          logger.info "DNSMASQ already running but configuration changed, restarting service"
-          execute_command('sudo brew services restart dnsmasq', 'Failed to restart dnsmasq service')
-          sleep(1)
-          logger.info 'DNSMASQ restarted with new configuration'
-          return
-        end
-
-        # For new installations or non-running service
-        # Check service status
-        service_status = execute_command_with_output('sudo brew services list | grep dnsmasq')
-
-        # If the service is in an error state, try to repair it
-        if service_status[:stdout].include?('error')
-          logger.warn "DNSMASQ service is in error state, attempting to repair..."
-          repair_dnsmasq_service
-        end
-
-        # Start or restart dnsmasq service
-        execute_command('sudo brew services restart dnsmasq', 'Failed to restart dnsmasq service')
-
-        # Give it a moment to start
-        sleep(1)
-
-        # Check if it's actually running
-        unless verify_running
-          # Try repair and restart
-          logger.warn 'DNSMASQ not running after restart, attempting to repair and start again...'
-          repair_dnsmasq_service
-          execute_command('sudo brew services start dnsmasq', 'Failed to start dnsmasq service')
-          sleep(2)
-
-          # Check again and provide more detailed error if it fails
-          unless verify_running
-            # Get service logs for debugging
-            logs = execute_command_with_output('brew services log dnsmasq')[:stdout]
-            raise "DNSMASQ service failed to start. Log output: #{logs}"
+          # In NAT-only mode, we actually want to skip DNSMASQ setup entirely
+          if nat_only_mode
+            logger.info 'Skipping DNSMASQ configuration in NAT-only mode'
+            return true
           end
+        else
+          # In normal mode, error out
+          logger.error '===== INTERNET SHARING CONFLICT DETECTED ====='
+          logger.error 'macOS Internet Sharing is currently enabled, which runs its own DHCP server (bootpd).'
+          logger.error 'This will conflict with our DNSMASQ DHCP server and prevent it from starting.'
+          logger.error ''
+          logger.error 'Please disable Internet Sharing in System Settings > Sharing before continuing.'
+          logger.error 'After disabling Internet Sharing, try running this script again.'
+          logger.error 'Options:'
+          logger.error '1. Disable Internet Sharing and try again'
+          logger.error '2. Use --only-nat to skip DNSMASQ and just set up NAT'
+          logger.error '3. Use --force to attempt to continue anyway (not recommended)'
+          logger.error '================================================'
+          raise 'Internet Sharing is enabled and will conflict with DNSMASQ DHCP server'
         end
-
-        logger.info 'DNSMASQ configured and restarted'
-      rescue StandardError => e
-        logger.error "Failed to configure DNSMASQ: #{e.message}", exception: e
-        raise
       end
+
+      # First ensure dnsmasq is installed before any verification check
+      # This fixes the "config file missing" error on first run
+      ensure_dnsmasq_installed
+
+      # Set up directories first - this helps prevent verification failures
+      # on the first run when directories don't exist yet
+      FileUtils.mkdir_p(File.dirname(DNSMASQ_CONF))
+      shell('sudo mkdir -p /opt/homebrew/var/lib/misc')
+      shell('sudo mkdir -p /opt/homebrew/var/log')
+
+      # Now check if our DNSMASQ is already running with current config
+      is_running = verify_running
+      if is_running && !config_changed?
+        logger.info 'DNSMASQ already running with current configuration, skipping reconfiguration'
+        return
+      end
+
+      # Process static mappings
+      process_static_mappings
+
+      # Ensure log file has proper permissions
+      shell('sudo touch /opt/homebrew/var/log/dnsmasq.log')
+
+      # Generate and write config using sudo
+      config_content = generate_config
+
+      # Write to a temporary file first
+      temp_conf = "/tmp/dnsmasq_config_#{Process.pid}.conf"
+      File.write(temp_conf, config_content)
+
+      # Use sudo to move it to the final location
+      execute_command("sudo cp #{temp_conf} #{DNSMASQ_CONF}", "Failed to write to #{DNSMASQ_CONF}")
+      execute_command("sudo chmod 644 #{DNSMASQ_CONF}", "Failed to set permissions on #{DNSMASQ_CONF}")
+      FileUtils.rm_f(temp_conf)
+
+      # Ensure log file permissions are set correctly
+      shell('sudo touch /opt/homebrew/var/log/dnsmasq.log')
+      shell('sudo chmod 644 /opt/homebrew/var/log/dnsmasq.log')
+      shell('sudo chown nobody /opt/homebrew/var/log/dnsmasq.log')
+
+      # Write resolv.conf with sudo since it's in a system directory
+      temp_file = '/tmp/resolv.dnsmasq.tmp'
+
+      # Support multiple DNS servers
+      resolv_content = ''
+      dns_servers = @dns_servers.is_a?(Array) ? @dns_servers : [@dns]
+
+      # Make sure we have at least one known working DNS server
+      if dns_servers.empty? || (dns_servers.size == 1 && dns_servers.first.nil?)
+        # Add reliable fallback DNS servers
+        dns_servers = ['1.1.1.1', '8.8.8.8']
+        logger.info "Using default DNS servers: #{dns_servers.join(', ')}"
+      end
+
+      # Add each DNS server to resolv.conf
+      dns_servers.each do |server|
+        next unless server && !server.empty?
+
+        resolv_content += "nameserver #{server}\n"
+      end
+
+      # Add search domain if present
+      resolv_content += "search #{@domain}\n" if @domain && !@domain.empty?
+
+      logger.info "Setting up DNS resolvers: #{dns_servers.join(', ')}"
+      File.write(temp_file, resolv_content)
+      execute_command("sudo mv #{temp_file} #{RESOLV_CONF}", "Failed to write to #{RESOLV_CONF}")
+      execute_command("sudo chmod 644 #{RESOLV_CONF}", "Failed to set permissions on #{RESOLV_CONF}")
+
+      # If already running but config changed, just restart
+      if is_running
+        logger.info 'DNSMASQ already running but configuration changed, restarting service'
+        execute_command('sudo brew services restart dnsmasq', 'Failed to restart dnsmasq service')
+        sleep(1)
+        logger.info 'DNSMASQ restarted with new configuration'
+        return
+      end
+
+      # For new installations or non-running service
+      # Check service status
+      service_status = shell('sudo brew services list | grep dnsmasq', raise_on_failure: false)
+
+      # If the service is in an error state, try to repair it
+      if service_status[:stdout].include?('error')
+        logger.warn 'DNSMASQ service is in error state, attempting to repair...'
+        repair_dnsmasq_service
+      end
+
+      # Start or restart dnsmasq service
+      execute_command('sudo brew services restart dnsmasq', 'Failed to restart dnsmasq service')
+
+      # Give it a moment to start
+      sleep(1)
+
+      # Check if it's actually running
+      unless verify_running
+        # Try repair and restart
+        logger.warn 'DNSMASQ not running after restart, attempting to repair and start again...'
+        repair_dnsmasq_service
+        execute_command('sudo brew services start dnsmasq', 'Failed to start dnsmasq service')
+        sleep(2)
+
+        # Check again and provide more detailed error if it fails
+        unless verify_running
+          # Get service logs for debugging
+          logs = shell('brew services log dnsmasq')[:stdout]
+          raise "DNSMASQ service failed to start. Log output: #{logs}"
+        end
+      end
+
+      logger.info 'DNSMASQ configured and restarted'
+    rescue StandardError => e
+      logger.error "Failed to configure DNSMASQ: #{e.message}", exception: e
+      raise
     end
 
     def uninstall
-      begin
-        # Stop and unload both homebrew and custom dnsmasq services
-        execute_command('sudo brew services stop dnsmasq', 'Failed to stop dnsmasq service')
-        logger.info 'Homebrew DNSMASQ service stopped'
+      # Stop and unload both homebrew and custom dnsmasq services
+      execute_command('sudo brew services stop dnsmasq', 'Failed to stop dnsmasq service')
+      logger.info 'Homebrew DNSMASQ service stopped'
 
-        # Check and unload custom service if it exists
-        custom_service_check = execute_command_with_output('sudo launchctl list | grep custom.dnsmasq')
-        if custom_service_check[:success]
-          execute_command('sudo launchctl unload -w /Library/LaunchDaemons/custom.dnsmasq.plist', 'Failed to unload custom dnsmasq service')
-          execute_command('sudo rm -f /Library/LaunchDaemons/custom.dnsmasq.plist', 'Failed to remove custom dnsmasq plist')
-          logger.info 'Custom DNSMASQ service stopped and removed'
-        end
-
-        # Kill any remaining processes
-        execute_command_with_output('sudo pkill -f dnsmasq || true')
-
-        # Remove configuration files
-        if File.exist?(DNSMASQ_CONF)
-          File.delete(DNSMASQ_CONF)
-          logger.info "Removed #{DNSMASQ_CONF}"
-        end
-
-        if File.exist?(RESOLV_CONF)
-          execute_command("sudo rm #{RESOLV_CONF}", "Failed to remove #{RESOLV_CONF}")
-          logger.info "Removed #{RESOLV_CONF}"
-        end
-
-        # Cleanup any log files
-        execute_command_with_output('sudo rm -f /tmp/dnsmasq.stderr /tmp/dnsmasq.stdout')
-      rescue StandardError => e
-        logger.error "Failed to uninstall DNSMASQ: #{e.message}", exception: e
-        raise
+      # Check and unload custom service if it exists
+      custom_service_check = shell('sudo launchctl list | grep custom.dnsmasq', raise_on_failure: false)
+      if custom_service_check[:success]
+        execute_command('sudo launchctl unload -w /Library/LaunchDaemons/custom.dnsmasq.plist',
+                        'Failed to unload custom dnsmasq service')
+        execute_command('sudo rm -f /Library/LaunchDaemons/custom.dnsmasq.plist',
+                        'Failed to remove custom dnsmasq plist')
+        logger.info 'Custom DNSMASQ service stopped and removed'
       end
+
+      # Kill any remaining processes
+      shell('sudo pkill -f dnsmasq || true')
+
+      # Remove configuration files
+      if File.exist?(DNSMASQ_CONF)
+        File.delete(DNSMASQ_CONF)
+        logger.info "Removed #{DNSMASQ_CONF}"
+      end
+
+      if File.exist?(RESOLV_CONF)
+        execute_command("sudo rm #{RESOLV_CONF}", "Failed to remove #{RESOLV_CONF}")
+        logger.info "Removed #{RESOLV_CONF}"
+      end
+
+      # Cleanup any log files
+      shell('sudo rm -f /tmp/dnsmasq.stderr /tmp/dnsmasq.stdout')
+    rescue StandardError => e
+      logger.error "Failed to uninstall DNSMASQ: #{e.message}", exception: e
+      raise
     end
 
     def list_static_mappings
       mappings = read_existing_mappings
 
       puts "\nStatic MAC to IP Mappings:"
-      puts "=========================="
+      puts '=========================='
 
       if mappings.empty?
-        puts "No static mappings configured."
+        puts 'No static mappings configured.'
         return
       end
 
@@ -248,81 +248,81 @@ module MacRouterUtils
       end
 
       puts "\nUse --add-static-mapping to add a mapping"
-      puts "Use --remove-static-mapping to remove a mapping"
+      puts 'Use --remove-static-mapping to remove a mapping'
     end
 
     def verify_running
-      logger.info "Performing comprehensive DNSMASQ service verification"
+      logger.info 'Performing comprehensive DNSMASQ service verification'
 
       # Step 1: Check if dnsmasq process is running (most reliable method)
-      process_check = execute_command_with_output('pgrep -l dnsmasq')
+      process_check = shell('pgrep -l dnsmasq', raise_on_failure: false)
 
       # If we find a dnsmasq process, that's the most reliable indicator it's running
       process_running = process_check[:success] && !process_check[:stdout].empty?
       if process_running
         # Found dnsmasq process - confirm the PID for logging
-        pid = process_check[:stdout].split.first.strip rescue "unknown"
+        pid = begin
+          process_check[:stdout].split.first.strip
+        rescue StandardError
+          'unknown'
+        end
         logger.info "✅ DNSMASQ process found with PID #{pid}"
         return true
       end
 
       # No dnsmasq process was found - perform more detailed checks
-      more_detailed_process = execute_command_with_output('ps aux | grep dnsmasq | grep -v grep')
+      more_detailed_process = shell('ps aux | grep dnsmasq | grep -v grep', raise_on_failure: false)
 
       # Double-check with the more detailed process search
       detailed_process_running = more_detailed_process[:success] && !more_detailed_process[:stdout].empty?
       if detailed_process_running && more_detailed_process[:stdout].include?('dnsmasq')
-        logger.info "✅ DNSMASQ process found with detailed search"
+        logger.info '✅ DNSMASQ process found with detailed search'
         return true
       end
 
       # Step 2: Check if any process is listening on DHCP port 67
-      port_check = execute_command_with_output('sudo lsof -i :67')
+      port_check = shell('sudo lsof -i :67', raise_on_failure: false)
       dhcp_listener = port_check[:success] && !port_check[:stdout].empty?
 
       # Check if it's our dnsmasq using port 67
       if dhcp_listener && port_check[:stdout].include?('dnsmasq')
-        logger.info "✅ DNSMASQ is using port 67 (DHCP port)"
+        logger.info '✅ DNSMASQ is using port 67 (DHCP port)'
         return true
       elsif dhcp_listener
         # Some other process is using port 67
-        process_name = "unknown"
-        if port_check[:stdout].match(/\n(\S+)\s+\d+/)
-          process_name = $1
-        end
+        process_name = 'unknown'
+        process_name = ::Regexp.last_match(1) if port_check[:stdout].match(/\n(\S+)\s+\d+/)
         logger.warn "⚠️ Port 67 is in use by another process: #{process_name}"
         logger.warn "This conflicts with DNSMASQ's DHCP functionality"
       end
 
       # Step 3: Check various service registrations
-      homebrew_service_check = execute_command_with_output('sudo brew services list | grep dnsmasq')
-      custom_service_check = execute_command_with_output('sudo launchctl list | grep custom.dnsmasq')
-      launchdaemon_check = execute_command_with_output('ls -la /Library/LaunchDaemons/*dnsmasq*')
+      homebrew_service_check = shell('sudo brew services list | grep dnsmasq', raise_on_failure: false)
+      custom_service_check = shell('sudo launchctl list | grep custom.dnsmasq', raise_on_failure: false)
+      shell('ls -la /Library/LaunchDaemons/*dnsmasq*', raise_on_failure: false)
 
       # Check if any service shows as active
-      homebrew_service_active = homebrew_service_check[:success] && homebrew_service_check[:stdout].include?('started')
-      custom_service_active = custom_service_check[:success]
+      homebrew_service_check[:success] && homebrew_service_check[:stdout].include?('started')
+      custom_service_check[:success]
 
       # Final determination: dnsmasq is not running
-      logger.warn "❌ DNSMASQ process is not running"
+      logger.warn '❌ DNSMASQ process is not running'
 
       # Return false - DNSMASQ is not running
       false
     end
-    
+
     # Detailed diagnostics method
     def detailed_diagnostics(process_running, process_check, more_detailed_process, dhcp_listener, port_check,
-                           homebrew_service_active, homebrew_service_check, custom_service_active,
-                           custom_service_check, launchdaemon_check, is_running)
+                             homebrew_service_active, homebrew_service_check, custom_service_active,
+                             custom_service_check, launchdaemon_check, is_running)
       logger.warn "Process check: #{process_running ? 'Passed' : 'Failed'} - #{process_check[:stdout]}"
       if more_detailed_process[:success] && !more_detailed_process[:stdout].empty?
         logger.warn "Process details: #{more_detailed_process[:stdout]}"
       end
 
       logger.warn "Port 67 usage: #{dhcp_listener ? 'Something is using DHCP port' : 'No DHCP service detected'}"
-      if dhcp_listener
-        logger.warn "Port 67 details: #{port_check[:stdout]}"
-      end
+      logger.warn "Port 67 details: #{port_check[:stdout]}" if dhcp_listener
 
       logger.warn "Homebrew service check: #{homebrew_service_active ? 'Passed' : 'Failed'} - #{homebrew_service_check[:stdout]}"
       logger.warn "Custom service check: #{custom_service_active ? 'Passed' : 'Failed'} - #{custom_service_check[:stdout]}"
@@ -330,20 +330,20 @@ module MacRouterUtils
 
       # Step 5: Check configuration
       if File.exist?(DNSMASQ_CONF)
-        config_check = execute_command_with_output("cat #{DNSMASQ_CONF} | grep -v '^#' | grep -v '^$'")
-        logger.warn "Config file exists: Yes"
-        logger.warn "Config content (excluding comments):"
+        config_check = shell("cat #{DNSMASQ_CONF} | grep -v '^#' | grep -v '^$'")
+        logger.warn 'Config file exists: Yes'
+        logger.warn 'Config content (excluding comments):'
         logger.warn config_check[:stdout]
 
         # Check permissions
-        perm_check = execute_command_with_output("ls -la #{DNSMASQ_CONF}")
+        perm_check = shell("ls -la #{DNSMASQ_CONF}")
         logger.warn "Config permissions: #{perm_check[:stdout]}"
       else
-        logger.warn "Config file exists: No - Config file is missing!"
+        logger.warn 'Config file exists: No - Config file is missing!'
       end
 
       # Step 6: Check executable
-      bin_check = execute_command_with_output("ls -la /opt/homebrew/sbin/dnsmasq")
+      bin_check = shell('ls -la /opt/homebrew/sbin/dnsmasq')
       logger.warn "DNSMASQ binary: #{bin_check[:success] ? bin_check[:stdout] : 'Not found!'}"
 
       # Step 7: Check logs
@@ -362,83 +362,81 @@ module MacRouterUtils
       end
 
       # Step 8: Check system log for dnsmasq messages
-      syslog_check = execute_command_with_output('grep -i dnsmasq /var/log/system.log | tail -10')
+      syslog_check = shell('grep -i dnsmasq /var/log/system.log | tail -10', raise_on_failure: false)
       if syslog_check[:success] && !syslog_check[:stdout].empty?
-        logger.warn "Recent system log entries:"
+        logger.warn 'Recent system log entries:'
         logger.warn syslog_check[:stdout]
       end
 
       # Step 9: If everything else has failed, try direct launch one last time
       if @force && !is_running
-        logger.warn "Force mode enabled - Attempting to start DNSMASQ directly as a last resort..."
+        logger.warn 'Force mode enabled - Attempting to start DNSMASQ directly as a last resort...'
         # Attempt to run dnsmasq directly to see any immediate error messages
-        direct_start = execute_command_with_output("sudo /opt/homebrew/sbin/dnsmasq --no-daemon --conf-file=#{DNSMASQ_CONF} --user=root")
+        direct_start = shell("sudo /opt/homebrew/sbin/dnsmasq --no-daemon --conf-file=#{DNSMASQ_CONF} --user=root")
         logger.warn "Direct start result: #{direct_start[:stdout]}"
         logger.warn "Direct start error: #{direct_start[:stderr]}"
 
         # Check if it's running now
         sleep(1)
-        new_check = execute_command_with_output('pgrep -l dnsmasq')
+        new_check = shell('pgrep -l dnsmasq', raise_on_failure: false)
         if new_check[:success] && !new_check[:stdout].empty?
-          logger.info "✅ DNSMASQ service started via direct launch"
+          logger.info '✅ DNSMASQ service started via direct launch'
           return true
         end
       end
 
-      return is_running
+      is_running
     end
 
     def flush_dns_cache
-      begin
-        # First, check if dnsmasq is running
-        is_running = verify_running
-        unless is_running
-          logger.error "Cannot flush DNS cache: DNSMASQ is not running"
-          return false
-        end
-
-        # Get PID of dnsmasq
-        pid_check = execute_command_with_output('pgrep dnsmasq')
-        unless pid_check[:success] && !pid_check[:stdout].empty?
-          logger.error "Cannot flush DNS cache: Unable to find DNSMASQ process"
-          return false
-        end
-
-        # Send SIGUSR1 signal to flush the cache
-        # SIGUSR1 is the signal that tells dnsmasq to clear its cache
-        pid = pid_check[:stdout].strip
-        flush_result = execute_command_with_output("sudo kill -SIGUSR1 #{pid}")
-
-        if flush_result[:success]
-          logger.info "DNS cache flushed successfully"
-          return true
-        else
-          logger.error "Failed to flush DNS cache: #{flush_result[:stderr]}"
-          return false
-        end
-      rescue StandardError => e
-        logger.error "Failed to flush DNS cache: #{e.message}", exception: e
+      # First, check if dnsmasq is running
+      is_running = verify_running
+      unless is_running
+        logger.error 'Cannot flush DNS cache: DNSMASQ is not running'
         return false
       end
+
+      # Get PID of dnsmasq
+      pid_check = shell('pgrep dnsmasq', raise_on_failure: false)
+      unless pid_check[:success] && !pid_check[:stdout].empty?
+        logger.error 'Cannot flush DNS cache: Unable to find DNSMASQ process'
+        return false
+      end
+
+      # Send SIGUSR1 signal to flush the cache
+      # SIGUSR1 is the signal that tells dnsmasq to clear its cache
+      pid = pid_check[:stdout].strip
+      flush_result = shell("sudo kill -SIGUSR1 #{pid}")
+
+      if flush_result[:success]
+        logger.info 'DNS cache flushed successfully'
+        true
+      else
+        logger.error "Failed to flush DNS cache: #{flush_result[:stderr]}"
+        false
+      end
+    rescue StandardError => e
+      logger.error "Failed to flush DNS cache: #{e.message}", exception: e
+      false
     end
 
     def check_status
       status = { installed: false, running: false, configured: false }
 
       # Check if dnsmasq is installed
-      result = execute_command_with_output('brew list --formula | grep dnsmasq')
+      result = shell('brew list --formula | grep dnsmasq', raise_on_failure: false)
       status[:installed] = result[:success] && result[:stdout].include?('dnsmasq')
 
       if status[:installed]
         # First check if dnsmasq process is running (most reliable method)
-        process_check = execute_command_with_output('pgrep -f dnsmasq')
+        process_check = shell('pgrep -f dnsmasq', raise_on_failure: false)
         process_running = process_check[:success] && !process_check[:stdout].empty?
 
         # Then check if any of the services are running
-        homebrew_check = execute_command_with_output('sudo brew services list | grep dnsmasq')
+        homebrew_check = shell('sudo brew services list | grep dnsmasq', raise_on_failure: false)
         homebrew_running = homebrew_check[:success] && homebrew_check[:stdout].include?('started')
 
-        custom_check = execute_command_with_output('sudo launchctl list | grep custom.dnsmasq')
+        custom_check = shell('sudo launchctl list | grep custom.dnsmasq', raise_on_failure: false)
         custom_running = custom_check[:success] && !custom_check[:stdout].empty?
 
         # Consider it running if either the process is detected or any service shows as running
@@ -491,12 +489,12 @@ module MacRouterUtils
       # Check if dnsmasq is installed
       stdout, _, status = Open3.capture3('brew list --formula | grep dnsmasq')
 
-      unless status.success? && stdout.include?('dnsmasq')
+      if status.success? && stdout.include?('dnsmasq')
+        logger.info 'DNSMASQ is already installed'
+      else
         logger.info 'DNSMASQ not found, installing...'
         execute_command('brew install dnsmasq', 'Failed to install dnsmasq')
         logger.info 'DNSMASQ installed successfully'
-      else
-        logger.info 'DNSMASQ is already installed'
       end
     end
 
@@ -574,7 +572,9 @@ module MacRouterUtils
             to_remove.each do |m|
               parts = m.split(',')
               existing_mappings.delete(m)
-              logger.info "Removed static mapping with MAC #{parts[0]}: #{parts[0]} → #{parts[2]} (#{parts[1].sub(/^set:/, '')})"
+              logger.info "Removed static mapping with MAC #{parts[0]}: #{parts[0]} → #{parts[2]} (#{parts[1].sub(
+                /^set:/, ''
+              )})"
               removed = true
             end
           # Try to interpret as IP address
@@ -585,7 +585,9 @@ module MacRouterUtils
             to_remove.each do |m|
               parts = m.split(',')
               existing_mappings.delete(m)
-              logger.info "Removed static mapping with IP #{parts[2]}: #{parts[0]} → #{parts[2]} (#{parts[1].sub(/^set:/, '')})"
+              logger.info "Removed static mapping with IP #{parts[2]}: #{parts[0]} → #{parts[2]} (#{parts[1].sub(
+                /^set:/, ''
+              )})"
               removed = true
             end
           # Try to interpret as hostname
@@ -596,7 +598,8 @@ module MacRouterUtils
             to_remove.each do |m|
               parts = m.split(',')
               existing_mappings.delete(m)
-              logger.info "Removed static mapping with name #{name}: #{parts[0]} → #{parts[2]} (#{parts[1].sub(/^set:/, '')})"
+              logger.info "Removed static mapping with name #{name}: #{parts[0]} → #{parts[2]} (#{parts[1].sub(/^set:/,
+                                                                                                               '')})"
               removed = true
             end
           else
@@ -631,7 +634,10 @@ module MacRouterUtils
       mac, name, ip = mapping.split(',').map(&:strip)
 
       # Validate MAC address
-      raise ArgumentError, "Invalid MAC address format: #{mac}. Expected format: AA:BB:CC:DD:EE:FF" unless valid_mac?(mac)
+      unless valid_mac?(mac)
+        raise ArgumentError,
+              "Invalid MAC address format: #{mac}. Expected format: AA:BB:CC:DD:EE:FF"
+      end
 
       # Validate hostname
       unless valid_hostname?(name)
@@ -649,7 +655,7 @@ module MacRouterUtils
     end
 
     def valid_hostname?(name)
-      !!(name =~ /^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$/)
+      !!(name =~ /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/)
     end
 
     def valid_ip?(ip)
@@ -665,29 +671,33 @@ module MacRouterUtils
 
       # 1. Check Internet Sharing setting in system preferences - this is not reliable by itself
       # Add error redirection to avoid issues when the file doesn't exist
-      internet_sharing_setting = execute_command_with_output('defaults read /Library/Preferences/SystemConfiguration/com.apple.nat 2>/dev/null | grep -i enabled')
-      is_enabled_in_settings = internet_sharing_setting[:success] && internet_sharing_setting[:stdout].include?('Enabled = 1')
+      internet_sharing_setting = shell(
+        'defaults read /Library/Preferences/SystemConfiguration/com.apple.nat 2>/dev/null | grep -i enabled',
+        raise_on_failure: false
+      )
+      is_enabled_in_settings = internet_sharing_setting[:success] &&
+                               internet_sharing_setting[:stdout].include?('Enabled = 1')
 
       # Early return if the setting explicitly shows disabled - most reliable negative indicator
       if internet_sharing_setting[:success] && internet_sharing_setting[:stdout].include?('Enabled = 0')
-        logger.info "Internet Sharing is explicitly disabled in system settings"
+        logger.info 'Internet Sharing is explicitly disabled in system settings'
         return false
       end
 
       # 2. Check for bootpd process - most reliable indicator for Internet Sharing
-      bootpd_check = execute_command_with_output('ps aux | grep bootpd | grep -v grep')
+      bootpd_check = shell('ps aux | grep bootpd | grep -v grep', raise_on_failure: false)
       bootpd_running = bootpd_check[:success] && !bootpd_check[:stdout].empty?
 
       # 3. Check if bootpd is specifically using DHCP port
-      bootpd_port_check = execute_command_with_output('sudo lsof -i :67 | grep bootpd')
+      bootpd_port_check = shell('sudo lsof -i :67 | grep bootpd', raise_on_failure: false)
       bootpd_using_port = bootpd_port_check[:success] && !bootpd_port_check[:stdout].empty?
 
       # 4. Check for natd process which is part of Internet Sharing
-      natd_check = execute_command_with_output('ps aux | grep natd | grep -v grep')
+      natd_check = shell('ps aux | grep natd | grep -v grep', raise_on_failure: false)
       natd_running = natd_check[:success] && !natd_check[:stdout].empty?
 
       # 5. Check for active bridge interface (often used by Internet Sharing)
-      bridge_check = execute_command_with_output('ifconfig | grep bridge')
+      bridge_check = shell('ifconfig | grep bridge', raise_on_failure: false)
       active_bridge = bridge_check[:success] && !bridge_check[:stdout].empty?
 
       # Some indicators are more reliable than others
@@ -700,7 +710,7 @@ module MacRouterUtils
       secondary_count += 1 if active_bridge
 
       # Log detailed information about what was detected
-      logger.info "Internet Sharing detection results:"
+      logger.info 'Internet Sharing detection results:'
       logger.info "- Settings indicate enabled: #{is_enabled_in_settings}"
       logger.info "- bootpd process running: #{bootpd_running} (PRIMARY)"
       logger.info "- bootpd using DHCP port: #{bootpd_using_port} (PRIMARY)"
@@ -714,27 +724,23 @@ module MacRouterUtils
       is_internet_sharing_enabled = has_primary_indicator
 
       if is_internet_sharing_enabled
-        logger.warn "Internet Sharing appears to be ACTIVE (detected PRIMARY indicator: bootpd/natd)"
+        logger.warn 'Internet Sharing appears to be ACTIVE (detected PRIMARY indicator: bootpd/natd)'
 
         # Check if we're in force mode
         if @force
-          logger.warn "Force mode enabled - proceeding despite Internet Sharing being active"
+          logger.warn 'Force mode enabled - proceeding despite Internet Sharing being active'
           return false
         end
 
         # Show detailed evidence
-        if bootpd_running
-          logger.warn "Evidence: bootpd process - #{bootpd_check[:stdout]}"
-        end
-        if bootpd_using_port
-          logger.warn "Evidence: bootpd on port 67 - #{bootpd_port_check[:stdout]}"
-        end
+        logger.warn "Evidence: bootpd process - #{bootpd_check[:stdout]}" if bootpd_running
+        logger.warn "Evidence: bootpd on port 67 - #{bootpd_port_check[:stdout]}" if bootpd_using_port
 
-        return true
+        true
       else
         # Now check if any other service is using port 67 (could be conflict even without Internet Sharing)
         # First check if ANY process is using port 67
-        any_dhcp_check = execute_command_with_output('sudo lsof -i :67')
+        any_dhcp_check = shell('sudo lsof -i :67', raise_on_failure: false)
 
         # Then extract all process names to identify them
         if any_dhcp_check[:success] && !any_dhcp_check[:stdout].empty?
@@ -742,79 +748,77 @@ module MacRouterUtils
           if any_dhcp_check[:stdout].include?('dnsmasq')
             # Our dnsmasq is already running - check if config changed
             if config_changed?
-              logger.info "Our dnsmasq is already running on port 67, but configuration has changed"
-              logger.info "Will restart dnsmasq with new configuration"
+              logger.info 'Our dnsmasq is already running on port 67, but configuration has changed'
+              logger.info 'Will restart dnsmasq with new configuration'
 
               # Stop existing dnsmasq service and wait for port to be freed
-              logger.info "Stopping existing dnsmasq service..."
-              execute_command_with_output('sudo brew services stop dnsmasq')
-              execute_command_with_output('sudo launchctl unload -w /Library/LaunchDaemons/custom.dnsmasq.plist 2>/dev/null || true')
-              execute_command_with_output('sudo pkill -f dnsmasq || true')
+              logger.info 'Stopping existing dnsmasq service...'
+              shell('sudo brew services stop dnsmasq')
+              shell('sudo launchctl unload -w /Library/LaunchDaemons/custom.dnsmasq.plist 2>/dev/null || true')
+              shell('sudo pkill -f dnsmasq || true')
 
               # Give it a moment to fully stop
               sleep(2)
 
               # Check if port is freed
-              port_check = execute_command_with_output('sudo lsof -i :67')
+              port_check = shell('sudo lsof -i :67', raise_on_failure: false)
               if port_check[:success] && !port_check[:stdout].empty?
-                logger.warn "Failed to stop existing dnsmasq service cleanly"
-                logger.warn "Port 67 is still in use by:"
+                logger.warn 'Failed to stop existing dnsmasq service cleanly'
+                logger.warn 'Port 67 is still in use by:'
                 logger.warn port_check[:stdout]
 
                 if @force
-                  logger.warn "Force mode enabled - proceeding anyway"
+                  logger.warn 'Force mode enabled - proceeding anyway'
                   return false
                 else
-                  logger.error "Cannot restart dnsmasq - port 67 is still in use"
-                  logger.error "Use --force to attempt to continue anyway"
+                  logger.error 'Cannot restart dnsmasq - port 67 is still in use'
+                  logger.error 'Use --force to attempt to continue anyway'
                   return true
                 end
               else
-                logger.info "Successfully stopped existing dnsmasq service"
+                logger.info 'Successfully stopped existing dnsmasq service'
               end
             else
-              logger.info "Our dnsmasq is already running on port 67 with correct configuration"
+              logger.info 'Our dnsmasq is already running on port 67 with correct configuration'
               return false # Not a conflict
             end
           else
             # Some other process (not our dnsmasq) is using port 67
             # Extract the process name for better error reporting
-            process_name = "unknown"
+            process_name = 'unknown'
             if any_dhcp_check[:stdout].match(/\S+\s+\d+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\S+)/)
-              process_name = $1
+              process_name = ::Regexp.last_match(1)
             else
               # Try alternate regex for different lsof output formats
               process_match = any_dhcp_check[:stdout].split("\n").grep(/\b67\b/).first
-              if process_match && process_match.split.length > 0
-                process_name = process_match.split.first
-              end
+              process_name = process_match.split.first if process_match && process_match.split.length.positive?
             end
 
-            if process_name.include?("dnsmasq")
+            if process_name.include?('dnsmasq')
               # It's probably our dnsmasq from a previous run
-              logger.info "Process dnsmasq is using port 67 - likely from a previous run"
-              logger.info "Will attempt to reconfigure existing dnsmasq service"
+              logger.info 'Process dnsmasq is using port 67 - likely from a previous run'
+              logger.info 'Will attempt to reconfigure existing dnsmasq service'
               return false
             elsif @force
               logger.warn "Another service (#{process_name}) is using DHCP port 67, but proceeding due to force mode"
-              logger.warn "Port 67 usage details:"
+              logger.warn 'Port 67 usage details:'
               logger.warn any_dhcp_check[:stdout]
               return false
             else
               logger.error "Another service (#{process_name}) is using DHCP port 67:"
               logger.error any_dhcp_check[:stdout]
-              logger.error "This will conflict with our DNSMASQ DHCP server"
-              if process_name == "bootpd"
+              logger.error 'This will conflict with our DNSMASQ DHCP server'
+              if process_name == 'bootpd'
                 logger.error "bootpd is Apple's DHCP server used by Internet Sharing"
-                logger.error "Please disable Internet Sharing or use --only-nat mode"
+                logger.error 'Please disable Internet Sharing or use --only-nat mode'
               end
               return true
             end
           end
         end
 
-        logger.info "Internet Sharing appears to be INACTIVE"
-        return false
+        logger.info 'Internet Sharing appears to be INACTIVE'
+        false
       end
     end
 
@@ -830,7 +834,9 @@ module MacRouterUtils
 
       # Compare configs, ignoring whitespace and comments
       clean_new = new_config.lines.reject { |l| l.strip.empty? || l.strip.start_with?('#') }.map(&:strip).join("\n")
-      clean_current = current_config.lines.reject { |l| l.strip.empty? || l.strip.start_with?('#') }.map(&:strip).join("\n")
+      clean_current = current_config.lines.reject do |l|
+        l.strip.empty? || l.strip.start_with?('#')
+      end.map(&:strip).join("\n")
 
       # Return true if configs differ, false if they're the same
       clean_new != clean_current
@@ -856,33 +862,33 @@ module MacRouterUtils
     end
 
     def repair_dnsmasq_service
-      logger.info "Repairing DNSMASQ service (comprehensive repair)..."
+      logger.info 'Repairing DNSMASQ service (comprehensive repair)...'
 
       # Step 1: Stop all services
-      logger.info "Step 1: Stopping existing services"
-      execute_command_with_output('sudo brew services stop dnsmasq || true')
-      execute_command_with_output('sudo launchctl unload -w /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist 2>/dev/null || true')
-      execute_command_with_output('sudo launchctl unload -w /Library/LaunchDaemons/custom.dnsmasq.plist 2>/dev/null || true')
+      logger.info 'Step 1: Stopping existing services'
+      shell('sudo brew services stop dnsmasq || true')
+      shell('sudo launchctl unload -w /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist 2>/dev/null || true')
+      shell('sudo launchctl unload -w /Library/LaunchDaemons/custom.dnsmasq.plist 2>/dev/null || true')
 
       # Step 2: Remove any existing service plists
-      logger.info "Step 2: Removing existing service plists"
-      execute_command_with_output('sudo rm -f /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist')
-      execute_command_with_output('sudo rm -f ~/Library/LaunchAgents/homebrew.mxcl.dnsmasq.plist')
-      execute_command_with_output('sudo rm -f /Library/LaunchDaemons/custom.dnsmasq.plist')
+      logger.info 'Step 2: Removing existing service plists'
+      shell('sudo rm -f /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist')
+      shell('sudo rm -f ~/Library/LaunchAgents/homebrew.mxcl.dnsmasq.plist')
+      shell('sudo rm -f /Library/LaunchDaemons/custom.dnsmasq.plist')
 
       # Step 3: Kill all dnsmasq processes
-      logger.info "Step 3: Killing all dnsmasq processes"
-      execute_command_with_output('sudo pkill -f dnsmasq || true')
+      logger.info 'Step 3: Killing all dnsmasq processes'
+      shell('sudo pkill -f dnsmasq || true')
       # Wait to ensure processes are terminated
       sleep(1)
 
       # Step 4: Check for port 67 usage (DHCP port)
-      logger.info "Step 4: Checking for DHCP port usage"
-      port_check = execute_command_with_output('sudo lsof -i :67')
+      logger.info 'Step 4: Checking for DHCP port usage'
+      port_check = shell('sudo lsof -i :67', raise_on_failure: false)
       if port_check[:success] && !port_check[:stdout].empty?
-        logger.warn "Found processes using DHCP port 67:"
+        logger.warn 'Found processes using DHCP port 67:'
         logger.warn port_check[:stdout]
-        logger.warn "Attempting to terminate these processes..."
+        logger.warn 'Attempting to terminate these processes...'
 
         # Extract PIDs
         pids = port_check[:stdout].lines.drop(1).map do |line|
@@ -891,7 +897,7 @@ module MacRouterUtils
 
         # Kill each PID individually
         pids.each do |pid|
-          execute_command_with_output("sudo kill -9 #{pid} 2>/dev/null || true")
+          shell("sudo kill -9 #{pid} 2>/dev/null || true")
         end
 
         # Wait to ensure processes are terminated
@@ -899,66 +905,66 @@ module MacRouterUtils
       end
 
       # Step 5: Reset Homebrew services
-      logger.info "Step 5: Cleaning up Homebrew services"
-      execute_command_with_output('brew services cleanup || true')
+      logger.info 'Step 5: Cleaning up Homebrew services'
+      shell('brew services cleanup || true')
 
       # Step 6: Ensure proper permissions for directories
-      logger.info "Step 6: Setting up directories and permissions"
+      logger.info 'Step 6: Setting up directories and permissions'
       # Create required directories
-      execute_command_with_output('sudo mkdir -p /opt/homebrew/var/lib/misc')
-      execute_command_with_output('sudo mkdir -p /opt/homebrew/var/log')
-      execute_command_with_output('sudo mkdir -p /opt/homebrew/etc')
+      shell('sudo mkdir -p /opt/homebrew/var/lib/misc')
+      shell('sudo mkdir -p /opt/homebrew/var/log')
+      shell('sudo mkdir -p /opt/homebrew/etc')
 
       # Set proper permissions
-      execute_command_with_output('sudo chown -R $(whoami):admin /opt/homebrew/var/lib/misc')
-      execute_command_with_output('sudo chown -R $(whoami):admin /opt/homebrew/var/log')
-      execute_command_with_output('sudo chown -R $(whoami):admin /opt/homebrew/etc')
+      shell('sudo chown -R $(whoami):admin /opt/homebrew/var/lib/misc')
+      shell('sudo chown -R $(whoami):admin /opt/homebrew/var/log')
+      shell('sudo chown -R $(whoami):admin /opt/homebrew/etc')
 
       # Ensure log file exists and has correct permissions
-      execute_command_with_output('sudo touch /opt/homebrew/var/log/dnsmasq.log')
-      execute_command_with_output('sudo chmod 644 /opt/homebrew/var/log/dnsmasq.log')
-      execute_command_with_output('sudo chown nobody /opt/homebrew/var/log/dnsmasq.log')
+      shell('sudo touch /opt/homebrew/var/log/dnsmasq.log')
+      shell('sudo chmod 644 /opt/homebrew/var/log/dnsmasq.log')
+      shell('sudo chown nobody /opt/homebrew/var/log/dnsmasq.log')
 
       # Step 7: Repair Homebrew dnsmasq installation
-      logger.info "Step 7: Repairing dnsmasq installation"
-      execute_command_with_output('sudo brew uninstall dnsmasq --force || true')
-      execute_command_with_output('brew install dnsmasq')
+      logger.info 'Step 7: Repairing dnsmasq installation'
+      shell('sudo brew uninstall dnsmasq --force || true')
+      shell('brew install dnsmasq')
 
       # Fix permissions on Homebrew paths
-      execute_command_with_output('sudo chown -R $(whoami):admin /opt/homebrew/Cellar/dnsmasq 2>/dev/null || true')
-      execute_command_with_output('sudo chown -R $(whoami):admin /opt/homebrew/opt/dnsmasq 2>/dev/null || true')
-      execute_command_with_output('sudo chown -R $(whoami):admin /opt/homebrew/var/homebrew/linked/dnsmasq 2>/dev/null || true')
+      shell('sudo chown -R $(whoami):admin /opt/homebrew/Cellar/dnsmasq 2>/dev/null || true')
+      shell('sudo chown -R $(whoami):admin /opt/homebrew/opt/dnsmasq 2>/dev/null || true')
+      shell('sudo chown -R $(whoami):admin /opt/homebrew/var/homebrew/linked/dnsmasq 2>/dev/null || true')
 
       # Step 8: Create a custom LaunchDaemon with broader permissions
-      logger.info "Step 8: Creating custom LaunchDaemon"
+      logger.info 'Step 8: Creating custom LaunchDaemon'
       custom_plist = <<~XML
-      <?xml version="1.0" encoding="UTF-8"?>
-      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-      <plist version="1.0">
-        <dict>
-          <key>Label</key>
-          <string>custom.dnsmasq</string>
-          <key>ProgramArguments</key>
-          <array>
-            <string>/opt/homebrew/sbin/dnsmasq</string>
-            <string>--keep-in-foreground</string>
-            <string>--conf-file=#{DNSMASQ_CONF}</string>
-            <string>--user=root</string>
-          </array>
-          <key>RunAtLoad</key>
-          <true/>
-          <key>KeepAlive</key>
-          <true/>
-          <key>StandardErrorPath</key>
-          <string>/tmp/dnsmasq.stderr</string>
-          <key>StandardOutPath</key>
-          <string>/tmp/dnsmasq.stdout</string>
-          <key>UserName</key>
-          <string>root</string>
-          <key>GroupName</key>
-          <string>wheel</string>
-        </dict>
-      </plist>
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+          <dict>
+            <key>Label</key>
+            <string>custom.dnsmasq</string>
+            <key>ProgramArguments</key>
+            <array>
+              <string>/opt/homebrew/sbin/dnsmasq</string>
+              <string>--keep-in-foreground</string>
+              <string>--conf-file=#{DNSMASQ_CONF}</string>
+              <string>--user=root</string>
+            </array>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>KeepAlive</key>
+            <true/>
+            <key>StandardErrorPath</key>
+            <string>/tmp/dnsmasq.stderr</string>
+            <key>StandardOutPath</key>
+            <string>/tmp/dnsmasq.stdout</string>
+            <key>UserName</key>
+            <string>root</string>
+            <key>GroupName</key>
+            <string>wheel</string>
+          </dict>
+        </plist>
       XML
 
       custom_plist_path = '/Library/LaunchDaemons/custom.dnsmasq.plist'
@@ -966,167 +972,131 @@ module MacRouterUtils
 
       # Write and install custom plist
       File.write(temp_plist_path, custom_plist)
-      execute_command_with_output("sudo mv #{temp_plist_path} #{custom_plist_path}")
-      execute_command_with_output("sudo chown root:wheel #{custom_plist_path}")
-      execute_command_with_output("sudo chmod 644 #{custom_plist_path}")
+      shell("sudo mv #{temp_plist_path} #{custom_plist_path}")
+      shell("sudo chown root:wheel #{custom_plist_path}")
+      shell("sudo chmod 644 #{custom_plist_path}")
 
       # Step 9: Try again with our config file (make sure it exists and has correct permissions)
-      logger.info "Step 9: Ensuring config file has proper permissions"
-      if File.exist?(DNSMASQ_CONF)
-        execute_command_with_output("sudo chmod 644 #{DNSMASQ_CONF}")
-        execute_command_with_output("sudo chown root:wheel #{DNSMASQ_CONF}")
-      else
+      logger.info 'Step 9: Ensuring config file has proper permissions'
+      unless File.exist?(DNSMASQ_CONF)
         # Generate minimal config to get started
         min_config = "# Minimal dnsmasq configuration\ndomain-needed\nbogus-priv\nlisten-address=127.0.0.1\n"
         File.write('/tmp/min_dnsmasq.conf', min_config)
-        execute_command_with_output("sudo mv /tmp/min_dnsmasq.conf #{DNSMASQ_CONF}")
-        execute_command_with_output("sudo chmod 644 #{DNSMASQ_CONF}")
-        execute_command_with_output("sudo chown root:wheel #{DNSMASQ_CONF}")
+        shell("sudo mv /tmp/min_dnsmasq.conf #{DNSMASQ_CONF}")
       end
+      shell("sudo chmod 644 #{DNSMASQ_CONF}")
+      shell("sudo chown root:wheel #{DNSMASQ_CONF}")
 
       # Step 10: Load the custom service
-      logger.info "Step 10: Loading custom DNSMASQ service"
-      execute_command_with_output("sudo launchctl load -w #{custom_plist_path}")
+      logger.info 'Step 10: Loading custom DNSMASQ service'
+      shell("sudo launchctl load -w #{custom_plist_path}")
 
       # Wait for service to start
       sleep(3)
 
       # Step 11: Verify service is running
-      logger.info "Step 11: Verifying if repair was successful"
-      process_check = execute_command_with_output('pgrep -l dnsmasq')
+      logger.info 'Step 11: Verifying if repair was successful'
+      process_check = shell('pgrep -l dnsmasq', raise_on_failure: false)
       if process_check[:success] && !process_check[:stdout].empty?
-        logger.info "✅ DNSMASQ service repair successful - process is running:"
+        logger.info '✅ DNSMASQ service repair successful - process is running:'
         logger.info process_check[:stdout]
       else
         # Try one last direct launch to see any errors
-        logger.warn "❌ DNSMASQ service not running after repair, trying direct launch..."
-        direct_launch = execute_command_with_output('sudo /opt/homebrew/sbin/dnsmasq --keep-in-foreground --conf-file=/opt/homebrew/etc/dnsmasq.conf --user=root --no-daemon')
+        logger.warn '❌ DNSMASQ service not running after repair, trying direct launch...'
+        direct_launch = shell('sudo /opt/homebrew/sbin/dnsmasq --keep-in-foreground --conf-file=/opt/homebrew/etc/dnsmasq.conf --user=root --no-daemon')
         logger.warn "Direct launch output: #{direct_launch[:stdout]}"
         logger.warn "Direct launch error: #{direct_launch[:stderr]}"
       end
 
-      logger.info "DNSMASQ service repair complete"
-    end
-
-    def flush_dns_cache
-      begin
-        # First, check if dnsmasq is running
-        is_running = verify_running
-        unless is_running
-          logger.error "Cannot flush DNS cache: DNSMASQ is not running"
-          return false
-        end
-
-        # Get PID of dnsmasq
-        pid_check = execute_command_with_output('pgrep dnsmasq')
-        unless pid_check[:success] && !pid_check[:stdout].empty?
-          logger.error "Cannot flush DNS cache: Unable to find DNSMASQ process"
-          return false
-        end
-
-        # Send SIGUSR1 signal to flush the cache
-        # SIGUSR1 is the signal that tells dnsmasq to clear its cache
-        pid = pid_check[:stdout].strip
-        flush_result = execute_command_with_output("sudo kill -SIGUSR1 #{pid}")
-
-        if flush_result[:success]
-          logger.info "DNS cache flushed successfully"
-          return true
-        else
-          logger.error "Failed to flush DNS cache: #{flush_result[:stderr]}"
-          return false
-        end
-      rescue StandardError => e
-        logger.error "Failed to flush DNS cache: #{e.message}", exception: e
-        return false
-      end
+      logger.info 'DNSMASQ service repair complete'
     end
 
     def show_dns_stats
-      begin
-        # First, check if dnsmasq is running
-        is_running = verify_running
-        unless is_running
-          puts "Cannot show DNS statistics: DNSMASQ is not running"
-          return
-        end
-
-        # Read configuration
-        if File.exist?(DNSMASQ_CONF)
-          content = File.read(DNSMASQ_CONF)
-
-          # Extract cache size
-          cache_size_match = content.match(/cache-size=([0-9]+)/)
-          cache_size = cache_size_match ? cache_size_match[1].to_i : "Default"
-
-          # Extract TTL settings
-          min_ttl_match = content.match(/min-cache-ttl=([0-9]+)/)
-          min_ttl = min_ttl_match ? min_ttl_match[1].to_i : "Default"
-
-          max_ttl_match = content.match(/max-ttl=([0-9]+)/)
-          max_ttl = max_ttl_match ? max_ttl_match[1].to_i : "Default"
-
-          puts "\nDNS Cache Configuration:"
-          puts "======================="
-          puts "Cache Size: #{cache_size} entries"
-          puts "Min TTL: #{min_ttl} seconds"
-          puts "Max TTL: #{max_ttl} seconds"
-        end
-
-        # Get upstream DNS servers
-        if File.exist?(RESOLV_CONF)
-          resolv_content = File.read(RESOLV_CONF)
-          dns_servers = resolv_content.scan(/^nameserver\s+([0-9.]+)/).flatten
-
-          if dns_servers && !dns_servers.empty?
-            puts "\nUpstream DNS Servers:"
-            dns_servers.each_with_index do |server, index|
-              puts "#{index + 1}. #{server}"
-            end
-          end
-        end
-
-        # Check log file for query stats
-        log_file = '/opt/homebrew/var/log/dnsmasq.log'
-        if File.exist?(log_file)
-          # Get total DNS queries
-          query_count = execute_command_with_output("grep -c 'query\\[A\\]' #{log_file}")
-          queries = query_count[:success] ? query_count[:stdout].to_i : 0
-
-          # Get cache hits (queries that were returned from cache)
-          cache_hits = execute_command_with_output("grep -c 'cached' #{log_file}")
-          hits = cache_hits[:success] ? cache_hits[:stdout].to_i : 0
-
-          # Most queried domains (top 5)
-          popular_domains = execute_command_with_output("grep 'query\\[A\\]' #{log_file} | awk '{print $6}' | sort | uniq -c | sort -rn | head -5")
-
-          puts "\nDNS Query Statistics (since log started):"
-          puts "Total DNS Queries: #{queries}"
-
-          if queries > 0
-            hit_rate = (hits.to_f / queries * 100).round(2)
-            puts "Cache Hits: #{hits} (#{hit_rate}% cache hit rate)"
-          else
-            puts "Cache Hits: 0 (0% cache hit rate)"
-          end
-
-          if popular_domains[:success] && !popular_domains[:stdout].empty?
-            puts "\nMost Popular Domains:"
-            puts popular_domains[:stdout]
-          end
-
-          # Recent queries (last 5)
-          recent_queries = execute_command_with_output("grep 'query\\[A\\]' #{log_file} | tail -5")
-          if recent_queries[:success] && !recent_queries[:stdout].empty?
-            puts "\nRecent DNS Queries:"
-            puts recent_queries[:stdout]
-          end
-        else
-          puts "No DNS log file found at #{log_file}"
-        end
-      rescue StandardError => e
-        puts "Error retrieving DNS statistics: #{e.message}"
+      # First, check if dnsmasq is running
+      is_running = verify_running
+      unless is_running
+        puts 'Cannot show DNS statistics: DNSMASQ is not running'
+        return
       end
+
+      # Read configuration
+      if File.exist?(DNSMASQ_CONF)
+        content = File.read(DNSMASQ_CONF)
+
+        # Extract cache size
+        cache_size_match = content.match(/cache-size=([0-9]+)/)
+        cache_size = cache_size_match ? cache_size_match[1].to_i : 'Default'
+
+        # Extract TTL settings
+        min_ttl_match = content.match(/min-cache-ttl=([0-9]+)/)
+        min_ttl = min_ttl_match ? min_ttl_match[1].to_i : 'Default'
+
+        max_ttl_match = content.match(/max-ttl=([0-9]+)/)
+        max_ttl = max_ttl_match ? max_ttl_match[1].to_i : 'Default'
+
+        puts "\nDNS Cache Configuration:"
+        puts '======================='
+        puts "Cache Size: #{cache_size} entries"
+        puts "Min TTL: #{min_ttl} seconds"
+        puts "Max TTL: #{max_ttl} seconds"
+      end
+
+      # Get upstream DNS servers
+      if File.exist?(RESOLV_CONF)
+        resolv_content = File.read(RESOLV_CONF)
+        dns_servers = resolv_content.scan(/^nameserver\s+([0-9.]+)/).flatten
+
+        if dns_servers && !dns_servers.empty?
+          puts "\nUpstream DNS Servers:"
+          dns_servers.each_with_index do |server, index|
+            puts "#{index + 1}. #{server}"
+          end
+        end
+      end
+
+      # Check log file for query stats
+      log_file = '/opt/homebrew/var/log/dnsmasq.log'
+      if File.exist?(log_file)
+        # Get total DNS queries
+        query_count = shell("grep -c 'query\\[A\\]' #{log_file}", raise_on_failure: false)
+        queries = query_count[:success] ? query_count[:stdout].to_i : 0
+
+        # Get cache hits (queries that were returned from cache)
+        cache_hits = shell("grep -c 'cached' #{log_file}", raise_on_failure: false)
+        hits = cache_hits[:success] ? cache_hits[:stdout].to_i : 0
+
+        # Most queried domains (top 5)
+        popular_domains = shell(
+          "grep 'query\\[A\\]' #{log_file} | awk '{print $6}' | sort | uniq -c | sort -rn | head -5",
+          raise_on_failure: false
+        )
+
+        puts "\nDNS Query Statistics (since log started):"
+        puts "Total DNS Queries: #{queries}"
+
+        if queries.positive?
+          hit_rate = (hits.to_f / queries * 100).round(2)
+          puts "Cache Hits: #{hits} (#{hit_rate}% cache hit rate)"
+        else
+          puts 'Cache Hits: 0 (0% cache hit rate)'
+        end
+
+        if popular_domains[:success] && !popular_domains[:stdout].empty?
+          puts "\nMost Popular Domains:"
+          puts popular_domains[:stdout]
+        end
+
+        # Recent queries (last 5)
+        recent_queries = shell("grep 'query\\[A\\]' #{log_file} | tail -5", raise_on_failure: false)
+        if recent_queries[:success] && !recent_queries[:stdout].empty?
+          puts "\nRecent DNS Queries:"
+          puts recent_queries[:stdout]
+        end
+      else
+        puts "No DNS log file found at #{log_file}"
+      end
+    rescue StandardError => e
+      puts "Error retrieving DNS statistics: #{e.message}"
     end
     # Make show_dns_stats and flush_dns_cache public methods
     public :show_dns_stats, :flush_dns_cache
