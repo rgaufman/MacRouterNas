@@ -1,12 +1,52 @@
 # TCP MSS clamping to fix issues with PPP and HTTPS connections
-scrub out on <%= @wan %> proto tcp all max-mss 1452
+scrub out on <%= @wan %> proto tcp all max-mss 1440
 
-# NAT rule for routing traffic
-nat on <%= @wan %> from <%= @subnet %> to any -> (<%= @wan %>)
+<% if @enable_dns_intercept %>
+# DNS interception - Force all DNS queries through local dnsmasq
+rdr pass on <%= @lan %> inet proto udp from any to any port 53 -> 127.0.0.1 port 53
+rdr pass on <%= @lan %> inet proto tcp from any to any port 53 -> 127.0.0.1 port 53
+<% end %>
 
 <% if @port_forwards && !@port_forwards.empty? %>
 # Port forwarding rules (auto-generated from config)
 <% @port_forwards.each do |rule| %>
 rdr on <%= @wan %> proto <%= rule['protocol'] %> from any to any port <%= rule['external_port'] %> -> <%= rule['internal_ip'] %> port <%= rule['internal_port'] %>
 <% end %>
+<% end %>
+
+# NAT rule for routing traffic
+nat on <%= @wan %> from <%= @subnet %> to any -> (<%= @wan %>)
+
+<% if @enable_dns_intercept %>
+# Block direct external DNS to prevent bypass
+# IMPORTANT: Use "in" not "out" - traffic from LAN clients comes IN to the LAN interface
+# Direction: LAN client → (IN) → en8 (LAN interface) → router → (OUT) → en0 (WAN)
+block drop in quick on <%= @lan %> proto udp from <%= @subnet %> to any port 53
+block drop in quick on <%= @lan %> proto tcp from <%= @subnet %> to any port 53
+<% end %>
+
+<% if @block_doh %>
+# Block DNS over HTTPS (DoH) to prevent bypass
+# IMPORTANT: Use "in" not "out" - traffic from LAN clients comes IN to the LAN interface
+# These rules must be on the LAN interface BEFORE NAT (after NAT, source IP is changed)
+# Cloudflare DoH
+block drop in quick on <%= @lan %> proto tcp from <%= @subnet %> to 1.1.1.1 port 443
+block drop in quick on <%= @lan %> proto tcp from <%= @subnet %> to 1.0.0.1 port 443
+block drop in quick on <%= @lan %> proto udp from <%= @subnet %> to 1.1.1.1 port 443
+block drop in quick on <%= @lan %> proto udp from <%= @subnet %> to 1.0.0.1 port 443
+# Google DoH
+block drop in quick on <%= @lan %> proto tcp from <%= @subnet %> to 8.8.8.8 port 443
+block drop in quick on <%= @lan %> proto tcp from <%= @subnet %> to 8.8.4.4 port 443
+block drop in quick on <%= @lan %> proto udp from <%= @subnet %> to 8.8.8.8 port 443
+block drop in quick on <%= @lan %> proto udp from <%= @subnet %> to 8.8.4.4 port 443
+# Quad9 DoH
+block drop in quick on <%= @lan %> proto tcp from <%= @subnet %> to 9.9.9.9 port 443
+block drop in quick on <%= @lan %> proto tcp from <%= @subnet %> to 149.112.112.112 port 443
+block drop in quick on <%= @lan %> proto udp from <%= @subnet %> to 9.9.9.9 port 443
+block drop in quick on <%= @lan %> proto udp from <%= @subnet %> to 149.112.112.112 port 443
+# OpenDNS DoH
+block drop in quick on <%= @lan %> proto tcp from <%= @subnet %> to 208.67.222.222 port 443
+block drop in quick on <%= @lan %> proto tcp from <%= @subnet %> to 208.67.220.220 port 443
+block drop in quick on <%= @lan %> proto udp from <%= @subnet %> to 208.67.222.222 port 443
+block drop in quick on <%= @lan %> proto udp from <%= @subnet %> to 208.67.220.220 port 443
 <% end %>

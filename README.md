@@ -37,6 +37,140 @@ A collection of Ruby utilities for setting up macOS as a router and NAS.
    bundle install
    ```
 
+## Quick Start Guide
+
+Here's the typical workflow to get everything running:
+
+### 1. Set Up NAT & Router
+First, configure your Mac as a router with NAT:
+
+```bash
+./setup_nat.rb --wan-interface en0 --lan-interface en8 --static-ip 192.168.1.1 --dhcp-range 192.168.1.11,192.168.1.249,12h
+```
+
+This sets up:
+- NAT routing between WAN (en0) and LAN (en8)
+- DHCP server on the LAN interface
+- DNS server with dnsmasq
+
+### 2. Set Up Digital Wellness Blocking
+Configure time-based website blocking (optional but recommended):
+
+```bash
+sudo ./scripts/setup_blocking.rb
+```
+
+This configures:
+- Permanent blocking of spam domains
+- Time-based blocking of social media (YouTube, Instagram, X, Facebook)
+- Default schedule: 5-7 PM weekdays, 12-8 PM Sunday
+- See [BLOCKED_SITES.md](BLOCKED_SITES.md) for philosophy and reasoning
+
+**Optional - Add Automatic Ad/Malware Blocking:**
+```bash
+# Download and activate ad/malware/tracker blacklists
+sudo ./update_and_reload_blacklists.rb
+
+# Schedule weekly automatic updates
+sudo ./install_blacklist_updater.rb
+```
+
+This is SEPARATE from time-based blocking:
+- **Automatic blacklist**: Always blocks ads, trackers, malware (StevenBlack, AdAway, etc.)
+- **Scheduled blocking**: Time-based social media blocking
+- Both work together independently
+
+### 3. Start the Scheduled Blocker Daemon
+Start the background daemon that manages time-based blocking:
+
+```bash
+sudo ./scripts/scheduled_blocker_ctl.rb start
+```
+
+### 4. Check Status
+Verify everything is running:
+
+```bash
+# Check router/NAT status
+./setup_nat.rb --status
+
+# Check scheduled blocker status
+sudo ./scripts/scheduled_blocker_ctl.rb status
+
+# Check DHCP leases
+./setup_nat.rb --list-dhcp-leases
+```
+
+### 5. View Logs
+Monitor what's happening:
+
+```bash
+# View blocking logs
+sudo ./scripts/scheduled_blocker_ctl.rb logs
+
+# View internet downtime logs
+sudo ./scripts/scheduled_blocker_ctl.rb downtime-logs
+
+# View DNS queries (see what domains are being accessed)
+sudo ./scripts/analyze_dns_queries.rb --show-devices
+```
+
+### 6. Manage Blocking Schedules
+Add or modify blocking schedules:
+
+```bash
+# Add a custom schedule
+sudo ./scripts/scheduled_blocker_ctl.rb add-schedule \
+  --name "Gaming Sites" \
+  --domains "twitch.tv,discord.com" \
+  --weekday-allowed "18:00-20:00" \
+  --saturday-allowed "14:00-18:00" \
+  --sunday-allowed "12:00-20:00"
+
+# List all schedules
+sudo ./scripts/scheduled_blocker_ctl.rb list-schedules
+
+# Remove a schedule (by name or index)
+sudo ./scripts/scheduled_blocker_ctl.rb remove-schedule --name "Gaming Sites"
+sudo ./scripts/scheduled_blocker_ctl.rb remove-schedule --index 0
+```
+
+### 7. Daemon Control
+Manage the blocker daemon:
+
+```bash
+sudo ./scripts/scheduled_blocker_ctl.rb stop      # Stop the daemon
+sudo ./scripts/scheduled_blocker_ctl.rb restart   # Restart the daemon
+sudo ./scripts/scheduled_blocker_ctl.rb run       # Run in foreground (for testing)
+```
+
+### Common Workflows
+
+**Daily Use:**
+- Everything runs automatically once set up
+- Websites are blocked/unblocked based on schedule
+- Internet downtime is logged automatically
+- DHCP assigns IPs to new devices automatically
+
+**Troubleshooting:**
+```bash
+# If blocking isn't working
+sudo ./scripts/scheduled_blocker_ctl.rb status
+sudo brew services restart dnsmasq
+
+# If NAT isn't working
+./setup_nat.rb --status
+sudo pfctl -s nat  # Check NAT rules
+
+# Test DNS blocking manually
+dig @127.0.0.1 youtube.com  # Should return 0.0.0.0 when blocked
+```
+
+**Customization:**
+- Edit schedules using `scheduled_blocker_ctl.rb add-schedule`
+- Modify defaults in `scripts/setup_blocking.rb`
+- See [BLOCKED_SITES.md](BLOCKED_SITES.md) for philosophy
+
 ## Usage
 
 ### Setting up NAT and DHCP
@@ -197,6 +331,62 @@ The DNS blacklist system uses dnsmasq to block unwanted domains:
 1. The system downloads blacklists from multiple reputable sources
 2. Blocked domains are redirected to 0.0.0.0 (which prevents connections)
 3. The blacklists are automatically updated weekly
+
+### DNS Interception and DoH Blocking
+
+MacRouterNas automatically configures DNS interception and DNS-over-HTTPS (DoH) blocking to ensure all devices use the router's DNS filtering:
+
+#### DNS Interception
+All DNS queries (port 53) from LAN clients are automatically redirected to the local dnsmasq server. This ensures:
+- No client can bypass DNS filtering by using external DNS servers (like 8.8.8.8)
+- All DNS queries go through your blacklists and time-based blocking
+- Even manually configured DNS servers on devices are intercepted
+
+#### DoH Blocking
+DNS-over-HTTPS (DoH) allows devices to bypass traditional DNS filtering by encrypting DNS queries through HTTPS (port 443). MacRouterNas blocks DoH connections to major public DNS providers:
+
+**Blocked DoH Providers:**
+- **Cloudflare**: 1.1.1.1, 1.0.0.1
+- **Google**: 8.8.8.8, 8.8.4.4
+- **Quad9**: 9.9.9.9, 149.112.112.112
+- **OpenDNS**: 208.67.222.222, 208.67.220.220
+
+This prevents modern browsers and apps (especially on iOS/Android) from circumventing your DNS filtering.
+
+#### How It's Configured
+These security features are automatically enabled when you run `./setup_nat.rb`:
+
+```ruby
+# Both are enabled by default in pf_manager.rb
+enable_dns_intercept: true   # Redirects all port 53 traffic to local DNS
+block_doh: true              # Blocks HTTPS to known DoH providers
+```
+
+#### Testing DNS Security
+
+Verify DNS interception is working:
+```bash
+# From a LAN client, try to query Google DNS directly
+dig @8.8.8.8 google.com
+# Should fail or be redirected to local dnsmasq
+
+# Query local DNS (should work)
+dig @192.168.1.1 google.com
+```
+
+Verify DoH blocking is working:
+```bash
+# From a LAN client, try to connect to Cloudflare DoH
+curl -v https://1.1.1.1
+# Should timeout or be blocked
+```
+
+Check that blocked domains return 0.0.0.0:
+```bash
+# Query a blocked domain (when scheduled blocking is active)
+dig @192.168.1.1 instagram.com
+# Should return: instagram.com. 0 IN A 0.0.0.0
+```
 
 ### Setting Up Ad Blocking
 
