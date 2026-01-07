@@ -24,11 +24,13 @@
             /sbin/pfctl -f /usr/local/etc/MacRouterNas/nat_rules.conf
 
             # Verify MSS clamping rule was loaded - sometimes scrub rules don't load properly
+            # CRITICAL: Never use pfctl -f with a file containing only SOME rules (like mss_clamp_rule.conf)
+            # because it will FLUSH all other rules (NAT, rdr, filter). Always reload the complete nat_rules.conf!
             # Check if MSS clamping rule is present
             if ! /sbin/pfctl -sa | grep -q 'max-mss'; then
-                echo "$(date): MSS clamping rule not found, applying it separately"
-                # Apply the persistent MSS clamping rule file
-                /sbin/pfctl -f /usr/local/etc/MacRouterNas/mss_clamp_rule.conf
+                echo "$(date): MSS clamping rule not found, reloading complete NAT rules"
+                # Reload the complete NAT rules file to avoid flushing other rules
+                /sbin/pfctl -f /usr/local/etc/MacRouterNas/nat_rules.conf
             fi
         </string>
     </array>

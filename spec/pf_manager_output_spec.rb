@@ -15,9 +15,9 @@ RSpec.describe MacRouterUtils::PFManager do
       it 'correctly parses conventional nat rule output' do
         # Example output from: sudo pfctl -s all | grep nat
         pfctl_output = "No ALTQ support in kernel\nALTQ related functions disabled\nnat on ppp0 inet from 192.168.1.0/24 to any -> (ppp0) round-robin"
-        
+
         result = pf_manager.send(:parse_nat_rule_output, pfctl_output)
-        
+
         expect(result[:nat_configured]).to be true
         expect(result[:interfaces][:wan]).to eq('ppp0')
         expect(result[:subnet]).to eq('192.168.1.0/24')
@@ -30,9 +30,9 @@ RSpec.describe MacRouterUtils::PFManager do
           nat on ppp0 inet from 192.168.1.0/24 to any -> (ppp0) round-robin
           Some other text that might be in the output
         OUTPUT
-        
+
         result = pf_manager.send(:parse_nat_rule_output, pfctl_output)
-        
+
         expect(result[:nat_configured]).to be true
         expect(result[:interfaces][:wan]).to eq('ppp0')
         expect(result[:subnet]).to eq('192.168.1.0/24')
@@ -45,9 +45,9 @@ RSpec.describe MacRouterUtils::PFManager do
           nat on en0 inet from 10.0.0.0/24 to any -> (en0) round-robin
           nat on ppp0 inet from 192.168.1.0/24 to any -> (ppp0) round-robin
         OUTPUT
-        
+
         result = pf_manager.send(:parse_nat_rule_output, pfctl_output)
-        
+
         expect(result[:nat_configured]).to be true
         # Should match the last rule found (latest rule)
         expect(result[:interfaces][:wan]).to eq('ppp0')
@@ -57,35 +57,35 @@ RSpec.describe MacRouterUtils::PFManager do
 
     context 'when processing output from pfctl -s nat' do
       it 'handles output without inet and round-robin' do
-        pfctl_output = "nat on ppp0 from 192.168.1.0/24 to any -> (ppp0)"
-        
+        pfctl_output = 'nat on ppp0 from 192.168.1.0/24 to any -> (ppp0)'
+
         result = pf_manager.send(:parse_nat_rule_output, pfctl_output)
-        
+
         expect(result[:nat_configured]).to be true
         expect(result[:interfaces][:wan]).to eq('ppp0')
         expect(result[:subnet]).to eq('192.168.1.0/24')
       end
-      
+
       it 'handles the older direct-style NAT rule format' do
-        pfctl_output = "nat on en0 from 192.168.2.0/24 to any -> (en0)"
-        
+        pfctl_output = 'nat on en0 from 192.168.2.0/24 to any -> (en0)'
+
         result = pf_manager.send(:parse_nat_rule_output, pfctl_output)
-        
+
         expect(result[:nat_configured]).to be true
         expect(result[:interfaces][:wan]).to eq('en0')
         expect(result[:subnet]).to eq('192.168.2.0/24')
       end
     end
-    
+
     context 'when processing Internet Sharing NAT rules' do
       it 'handles Internet Sharing style NAT rules' do
         pfctl_output = <<~OUTPUT
           nat on en0 from 192.168.2.0/24 to any -> (en0)
           nat on bridge100 from 192.168.137.0/24 to any -> (en0)
         OUTPUT
-        
+
         result = pf_manager.send(:parse_nat_rule_output, pfctl_output)
-        
+
         expect(result[:nat_configured]).to be true
         # Should match the last rule found (bridge interface used by Internet Sharing)
         expect(result[:interfaces][:wan]).to eq('bridge100')
@@ -96,19 +96,19 @@ RSpec.describe MacRouterUtils::PFManager do
     context 'when no NAT rules are found' do
       it 'returns not configured when output has no NAT rules' do
         pfctl_output = "No ALTQ support in kernel\nALTQ related functions disabled\nSome other rules here"
-        
+
         result = pf_manager.send(:parse_nat_rule_output, pfctl_output)
-        
+
         expect(result[:nat_configured]).to be false
         expect(result[:interfaces]).to be_nil
         expect(result[:subnet]).to be_nil
       end
 
       it 'returns not configured when output is empty' do
-        pfctl_output = ""
-        
+        pfctl_output = ''
+
         result = pf_manager.send(:parse_nat_rule_output, pfctl_output)
-        
+
         expect(result[:nat_configured]).to be false
         expect(result[:interfaces]).to be_nil
         expect(result[:subnet]).to be_nil
@@ -126,14 +126,14 @@ RSpec.describe MacRouterUtils::PFManager do
         Version: 4.6
         Options: ALTQ, NAT-anchor, NF_UNKNOWN_ALG, PF_INPLACE, PF_MOD_REF
       OUTPUT
-      
+
       result = pf_manager.send(:parse_pf_info, pfctl_output)
-      
+
       expect(result[:enabled]).to be true
       expect(result[:debug]).to eq('Urgent')
       expect(result[:version]).to eq('4.6')
     end
-    
+
     it 'correctly detects when PF is disabled' do
       pfctl_output = <<~OUTPUT
         Status: Disabled
@@ -142,14 +142,14 @@ RSpec.describe MacRouterUtils::PFManager do
         Version: 4.6
         Options: ALTQ, NAT-anchor, NF_UNKNOWN_ALG, PF_INPLACE, PF_MOD_REF
       OUTPUT
-      
+
       result = pf_manager.send(:parse_pf_info, pfctl_output)
-      
+
       expect(result[:enabled]).to be false
       expect(result[:debug]).to eq('Urgent')
       expect(result[:version]).to eq('4.6')
     end
-    
+
     it 'handles unusual formatting in pfctl output' do
       pfctl_output = <<~OUTPUT
         No ALTQ support in kernel
@@ -158,16 +158,16 @@ RSpec.describe MacRouterUtils::PFManager do
         Debug: Urgent
         Version: 4.6
       OUTPUT
-      
+
       result = pf_manager.send(:parse_pf_info, pfctl_output)
-      
+
       expect(result[:enabled]).to be true
       expect(result[:debug]).to eq('Urgent')
       expect(result[:version]).to eq('4.6')
     end
-    
+
     it 'handles empty or invalid output' do
-      result = pf_manager.send(:parse_pf_info, "")
+      result = pf_manager.send(:parse_pf_info, '')
       expect(result[:enabled]).to be false
       expect(result[:error]).to eq('Invalid pfctl output')
     end
@@ -182,15 +182,15 @@ RSpec.describe MacRouterUtils::PFManager do
           Debug: Urgent
           Version: 4.6
         OUTPUT
-        
+
         nat_rules = <<~OUTPUT
           nat on ppp0 inet from 192.168.1.0/24 to any -> (ppp0) round-robin
         OUTPUT
-        
-        internet_sharing = "Enabled = 0"
-        
+
+        internet_sharing = 'Enabled = 0'
+
         result = pf_manager.send(:check_status_from_output, pf_info, nat_rules, internet_sharing)
-        
+
         expect(result[:enabled]).to be true
         expect(result[:nat_configured]).to be true
         expect(result[:interfaces][:wan]).to eq('ppp0')
@@ -199,7 +199,7 @@ RSpec.describe MacRouterUtils::PFManager do
         expect(result[:internet_sharing_enabled]).to be false
       end
     end
-    
+
     context 'when PF is enabled but NAT is not configured' do
       it 'correctly shows PF enabled but NAT not configured' do
         pf_info = <<~OUTPUT
@@ -207,18 +207,18 @@ RSpec.describe MacRouterUtils::PFManager do
           Debug: Urgent
           Version: 4.6
         OUTPUT
-        
-        nat_rules = ""
-        internet_sharing = "Enabled = 0"
-        
+
+        nat_rules = ''
+        internet_sharing = 'Enabled = 0'
+
         result = pf_manager.send(:check_status_from_output, pf_info, nat_rules, internet_sharing)
-        
+
         expect(result[:enabled]).to be true
         expect(result[:nat_configured]).to be false
         expect(result[:internet_sharing_enabled]).to be false
       end
     end
-    
+
     context 'when Internet Sharing is enabled' do
       it 'correctly identifies Internet Sharing as providing NAT' do
         pf_info = <<~OUTPUT
@@ -226,15 +226,15 @@ RSpec.describe MacRouterUtils::PFManager do
           Debug: Urgent
           Version: 4.6
         OUTPUT
-        
+
         nat_rules = <<~OUTPUT
           nat on bridge100 from 192.168.137.0/24 to any -> (en0)
         OUTPUT
-        
-        internet_sharing = "Enabled = 1"
-        
+
+        internet_sharing = 'Enabled = 1'
+
         result = pf_manager.send(:check_status_from_output, pf_info, nat_rules, internet_sharing)
-        
+
         expect(result[:enabled]).to be true
         expect(result[:nat_configured]).to be true
         expect(result[:internet_sharing_enabled]).to be true
@@ -243,15 +243,15 @@ RSpec.describe MacRouterUtils::PFManager do
         expect(result[:subnet]).to eq('192.168.137.0/24')
       end
     end
-    
+
     context 'when PF is disabled' do
       it 'correctly shows PF is disabled regardless of NAT configuration' do
-        pf_info = "Status: Disabled"
-        nat_rules = "nat on ppp0 inet from 192.168.1.0/24 to any -> (ppp0) round-robin"
-        internet_sharing = "Enabled = 0"
-        
+        pf_info = 'Status: Disabled'
+        nat_rules = 'nat on ppp0 inet from 192.168.1.0/24 to any -> (ppp0) round-robin'
+        internet_sharing = 'Enabled = 0'
+
         result = pf_manager.send(:check_status_from_output, pf_info, nat_rules, internet_sharing)
-        
+
         expect(result[:enabled]).to be false
         expect(result[:nat_configured]).to be false
       end

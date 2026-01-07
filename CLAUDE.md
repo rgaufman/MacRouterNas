@@ -1,5 +1,108 @@
 # Instructions for Claude when working with this repository
 
+## Critical Project Standards
+
+### Code Quality and Linting
+- **ALWAYS run rubocop after writing or modifying Ruby code**
+- Run `bundle exec rubocop -A` to auto-correct style violations
+- Fix any remaining offenses that cannot be auto-corrected
+- Ensure specs still pass after rubocop corrections: `bundle exec rspec`
+- Rubocop is configured to enforce consistent code style across the project
+- Common corrections include:
+  - String literal quotes (prefer single quotes)
+  - Trailing whitespace removal
+  - Proper indentation and spacing
+  - Frozen string literal comments
+- Only commit code that passes rubocop checks (metrics warnings like ClassLength are acceptable)
+
+### Error Handling and Exit Codes
+- **Commands raise by default** - The `shell()` method raises exceptions on failure automatically
+- **Use raise_on_failure: false only when failures are expected**:
+  ```ruby
+  # Default behavior - raises on failure (GOOD!)
+  shell("sudo cp file dest")
+
+  # Only for commands that may legitimately fail
+  shell("sudo pkill dnsmasq || true", raise_on_failure: false)
+  shell("pgrep dnsmasq", raise_on_failure: false)  # May not be running
+  ```
+- **Never check [:success] when using default behavior** - The command already raised if it failed:
+  ```ruby
+  # WRONG - unnecessary check, command already raised if it failed
+  result = shell("sudo cp file dest")
+  raise "Failed" unless result[:success]
+
+  # CORRECT - just run it, will raise automatically
+  shell("sudo cp file dest")
+
+  # CORRECT - only when you need the output
+  result = shell("cat file")
+  puts result[:stdout]
+  ```
+- Validate critical operations (like dnsmasq config) before applying them
+- **Debugging principle**: Fail loudly by default, only suppress when intentional
+
+### Clean Command Wrappers - Favor Ruby Over Shell Pipes
+
+**Core Principles**:
+
+1. **Avoid shell pipes** - Pipes hide errors, are hard to test, and obscure intent
+   - BAD: `shell("ps aux | grep dnsmasq | grep -v grep")`
+   - GOOD: `ProcessHelper.find_by_name('dnsmasq')`
+
+2. **Create utility wrappers** for common operations:
+   - `ProcessHelper` - Process management (pgrep, pid checking)
+   - `FileGrep` - File searching and pattern matching
+   - `LsofHelper` - Port and file descriptor inspection
+   - `BrewServices` - Homebrew service management
+   - `LaunchCtl` - LaunchDaemon/LaunchAgent management
+
+3. **Wrappers should**:
+   - Inherit from `SystemManager` to access `shell()` method
+   - Use class methods for stateless operations
+   - Return structured data (hashes/arrays) not raw strings
+   - Handle parsing errors gracefully
+   - Have comprehensive specs with real command output examples
+
+4. **Process data in Ruby** - Use Ruby's superior string/array processing instead of bash
+   - Use `select`, `map`, `reject`, `split`, `match` etc.
+   - Easier to test, debug, and understand
+
+5. **Wrapper files location**: Place in `lib/` directory (e.g., `lib/process_helper.rb`)
+
+6. **When pipes ARE acceptable**:
+   - One-time diagnostic scripts in `scripts/` directory
+   - When creating a wrapper would be more complex than the pipe itself
+   - Even then, if used more than once, create a wrapper
+
+### Logging
+- **NEVER write logs to `/var/log/`** - This requires sudo and is a system directory
+- **ALWAYS use `./log/` directory** - Project-local, auto-created, no permissions needed
+- Example: `LOG_FILE = File.expand_path('../../log', __dir__) + '/app.log'`
+- Ensure log directory exists: `FileUtils.mkdir_p(LOG_DIR) unless Dir.exist?(LOG_DIR)`
+
+### Parameter Parsing
+- **ALL scripts with arguments MUST use optparse** - No raw ARGV manipulation
+- Provide `--help` for every command
+- Use consistent patterns across all scripts
+- Example structure:
+  ```ruby
+  options = {}
+  OptionParser.new do |opts|
+    opts.banner = "Usage: script.rb [options]"
+    opts.on('-n', '--name NAME', 'Description') { |v| options[:name] = v }
+    opts.on('-h', '--help', 'Show help') { puts opts; exit }
+  end.parse!
+  ```
+
+### Scheduled Blocker System
+- Default allowed times: **17:00-19:00** (5-7 PM) for weekdays
+- Separate parameters for: `weekday_allowed`, `saturday_allowed`, `sunday_allowed`
+- Saturday is NOT automatically blocked (Shabbat observance is user-configurable)
+- Logs to `./log/scheduled_blocker.log` and `./log/internet_downtime.log`
+- Uses gems: rufus-scheduler, holidays, activesupport, daemons, tty-command
+- See `BLOCKED_SITES.md` for philosophy and reasoning
+
 ## General Coding Guidelines
 
 ### Using Templates
@@ -26,6 +129,43 @@ content = renderer.render('my_template', variables)
 ```
 
 ## NAT Configuration for macOS - Working Solution Guide
+
+### CRITICAL: pfctl -f FLUSHES ALL RULES
+
+**This is an extremely dangerous pitfall that can break your entire network configuration!**
+
+When you run `pfctl -f /path/to/rules.conf`, it does NOT merge or add rules - it **FLUSHES ALL EXISTING RULES** and replaces them with only what's in that file!
+
+**Example of the bug:**
+```ruby
+# Load complete NAT rules (has NAT, rdr, filter, scrub rules)
+shell("sudo pfctl -f /usr/local/etc/MacRouterNas/nat_rules.conf")  # All rules loaded ✓
+
+# Later, try to "fix" missing MSS clamping rule
+shell("sudo pfctl -f /usr/local/etc/MacRouterNas/mss_clamp_rule.conf")  # DISASTER! ✗
+# This FLUSHES all NAT, rdr, and filter rules, leaving ONLY the scrub rule!
+```
+
+**The fix:**
+- ALWAYS reload the COMPLETE rule file that contains ALL your rules
+- NEVER use `pfctl -f` with a partial file containing only some rules
+
+```ruby
+# WRONG - This will flush all other rules!
+shell("sudo pfctl -f /usr/local/etc/MacRouterNas/mss_clamp_rule.conf")  # Only has scrub
+
+# CORRECT - Reload the complete file
+shell("sudo pfctl -f /usr/local/etc/MacRouterNas/nat_rules.conf")  # Has all rules
+```
+
+**This has been documented in:**
+1. Code comments in `utils/pf_manager.rb` (lines 285-287, 317-319, 518-520)
+2. Template comments in `templates/nat_launchdaemon.erb` (lines 27-28)
+3. This documentation section
+
+**Favor Ruby parsing over shell pipes:**
+- BAD: `shell("sudo pfctl -sa | grep 'max-mss'")`  - Hides timing issues
+- GOOD: Use the `mss_clamping_rule_loaded?` helper method that parses output in Ruby
 
 ### What works:
 1. The direct approach that successfully enables NAT:
@@ -176,6 +316,69 @@ scrub out on ppp0 proto tcp all max-mss 1440
 ```
 
 This rule ensures that TCP connections have their MSS (Maximum Segment Size) clamped to a value that works with the MTU of PPP interfaces, preventing fragmentation issues.
+
+### PF Rule Directions: Critical Understanding
+
+**CRITICAL**: The most common mistake with PF rules is using the wrong direction (in vs out). Understanding packet flow is essential.
+
+#### Packet Flow Direction
+When traffic flows from LAN clients through the router:
+```
+LAN client → (IN) → LAN interface (en8) → router → (OUT) → WAN interface (en0) → Internet
+```
+
+#### Rule Direction Guidelines
+- **"in"** = traffic coming INTO the interface
+- **"out"** = traffic leaving FROM the interface
+- **For blocking LAN client traffic**: Use "in" on the LAN interface (NOT "out")
+- **Why**: Traffic from LAN clients comes IN to the LAN interface before routing
+
+#### Common Mistakes and Fixes
+
+**WRONG** - Using "out" on LAN interface:
+```
+# This will NOT work - traffic from LAN clients comes IN, not out
+block drop out quick on en8 proto tcp from 192.168.1.0/24 to 8.8.8.8 port 443
+```
+
+**CORRECT** - Using "in" on LAN interface:
+```
+# This works - traffic from LAN clients comes IN to the LAN interface
+block drop in quick on en8 proto tcp from 192.168.1.0/24 to 8.8.8.8 port 443
+```
+
+**WRONG** - Blocking on WAN interface after NAT:
+```
+# This will NOT work - NAT changes the source IP before the packet reaches WAN
+block drop out quick on en0 proto tcp from 192.168.1.0/24 to 8.8.8.8 port 443
+```
+
+#### Why Block Rules Must Be on LAN Interface
+1. **NAT changes source IP**: After NAT, the source IP is the WAN interface IP, not the LAN client IP
+2. **Filter before NAT**: Block rules must filter BEFORE NAT translation occurs
+3. **LAN interface sees original traffic**: The LAN interface sees the original source IP from clients
+
+#### DNS Interception and DoH Blocking
+For DNS interception and DoH (DNS over HTTPS) blocking:
+
+```
+# DNS interception - redirect on LAN interface where traffic enters
+rdr pass on en8 inet proto udp from any to any port 53 -> 127.0.0.1 port 53
+
+# Block direct DNS - block IN on LAN interface before NAT
+block drop in quick on en8 proto udp from 192.168.1.0/24 to any port 53
+
+# Block DoH to Cloudflare - block IN on LAN interface before NAT
+block drop in quick on en8 proto tcp from 192.168.1.0/24 to 1.1.1.1 port 443
+```
+
+#### PF Rule Order
+PF processes rules in this order:
+1. **scrub** - packet normalization (MSS clamping, etc.)
+2. **rdr/nat** - address translation (NAT, port forwarding, DNS interception)
+3. **filter** - allow/block rules
+
+**Always maintain this order** in your rule files, or PF will reject them with "Rules must be in order" error.
 
 ### Testing NAT:
 To verify NAT is working:

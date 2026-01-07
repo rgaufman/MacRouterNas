@@ -17,7 +17,7 @@ RSpec.describe MacRouterUtils::PFManager do
     allow(port_forwards_mock).to receive(:list_port_forwards).and_return([])
   end
 
-  # Note: We no longer test the generate_rules method directly because it was removed
+  # NOTE: We no longer test the generate_rules method directly because it was removed
   # in favor of a different approach that uses direct NAT rule loading
   describe '#create_secure_nat_rule_file' do
     it 'generates NAT rules correctly' do
@@ -36,7 +36,7 @@ RSpec.describe MacRouterUtils::PFManager do
       # Verify the result
       expect(result).to eq('/tmp/mock_nat_rule.conf')
       expect(File).to have_received(:write).with('/tmp/mock_nat_rule.conf', nat_rule)
-      expect(FileUtils).to have_received(:chmod).with(0600, '/tmp/mock_nat_rule.conf')
+      expect(FileUtils).to have_received(:chmod).with(0o600, '/tmp/mock_nat_rule.conf')
     end
   end
 
@@ -50,13 +50,14 @@ RSpec.describe MacRouterUtils::PFManager do
 
       # Mock the render method (with the updated parameters)
       allow(renderer).to receive(:render).with('nat_launchdaemon', hash_including({
-        wan_interface: wan_interface,
+                                                                                    wan_interface: wan_interface,
         subnet: '192.168.1.0/24',
         port_forwards: []
-      })).and_return("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n</plist>")
+                                                                                  })).and_return("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n</plist>")
 
       # Mock the MSS clamping rule render
-      allow(renderer).to receive(:render).with('mss_clamping_rule', anything).and_return("scrub out on en0 proto tcp all max-mss 1452\n")
+      allow(renderer).to receive(:render).with('mss_clamping_rule',
+                                               anything).and_return("scrub out on en0 proto tcp all max-mss 1440\n")
 
       # Mock store_in_persistent_location to avoid issues with that method
       allow(pf_manager).to receive(:store_in_persistent_location).and_return('/usr/local/etc/MacRouterNas/test_file.conf')
@@ -73,12 +74,12 @@ RSpec.describe MacRouterUtils::PFManager do
       allow(File).to receive(:exist?).and_return(false)
 
       # Mock the mkdir command
-      allow(pf_manager).to receive(:execute_command_with_output).with("sudo mkdir -p /Library/LaunchDaemons").and_return(
-        {success: true, stdout: '', stderr: ''}
+      allow(pf_manager).to receive(:execute_command_with_output).with('sudo mkdir -p /Library/LaunchDaemons').and_return(
+        { success: true, stdout: '', stderr: '' }
       )
 
       # Mock other command executions
-      allow(pf_manager).to receive(:execute_command_with_output).and_return({success: true, stdout: '', stderr: ''})
+      allow(pf_manager).to receive(:execute_command_with_output).and_return({ success: true, stdout: '', stderr: '' })
     end
 
     it 'creates a launch daemon for NAT configuration' do
@@ -101,21 +102,21 @@ RSpec.describe MacRouterUtils::PFManager do
       end
 
       it 'correctly identifies active PPP interface' do
-        allow(ppp_manager).to receive(:execute_command_with_output).with("ifconfig ppp0").and_return({
-          success: true,
+        allow(ppp_manager).to receive(:execute_command_with_output).with('ifconfig ppp0').and_return({
+                                                                                                       success: true,
           stdout: <<~INTERFACE
             ppp0: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1492
                 inet 100.66.91.122 --> 203.134.4.189 netmask 0xff000000
                 inet6 fe80::d211:e5ff:fe88:7787%ppp0 prefixlen 64 scopeid 0x19
                 nd6 options=201<PERFORMNUD,DAD>
           INTERFACE
-        })
+                                                                                                     })
 
         # Also mock ifconfig for LAN interface
-        allow(ppp_manager).to receive(:execute_command_with_output).with("ifconfig en5").and_return({
-          success: true,
-          stdout: "en5: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500"
-        })
+        allow(ppp_manager).to receive(:execute_command_with_output).with('ifconfig en5').and_return({
+                                                                                                      success: true,
+          stdout: 'en5: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500'
+                                                                                                    })
 
         # Execute the private method
         expect { ppp_manager.send(:verify_interfaces) }.not_to raise_error
@@ -130,20 +131,20 @@ RSpec.describe MacRouterUtils::PFManager do
       end
 
       it 'warns but continues if PPP interface has no IP' do
-        allow(ppp_manager).to receive(:execute_command_with_output).with("ifconfig ppp0").and_return({
-          success: true,
+        allow(ppp_manager).to receive(:execute_command_with_output).with('ifconfig ppp0').and_return({
+                                                                                                       success: true,
           stdout: <<~INTERFACE
             ppp0: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1492
                 inet6 fe80::d211:e5ff:fe88:7787%ppp0 prefixlen 64 scopeid 0x19
                 nd6 options=201<PERFORMNUD,DAD>
           INTERFACE
-        })
+                                                                                                     })
 
         # Also mock ifconfig for LAN interface
-        allow(ppp_manager).to receive(:execute_command_with_output).with("ifconfig en5").and_return({
-          success: true,
-          stdout: "en5: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500"
-        })
+        allow(ppp_manager).to receive(:execute_command_with_output).with('ifconfig en5').and_return({
+                                                                                                      success: true,
+          stdout: 'en5: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500'
+                                                                                                    })
 
         # The method warns but doesn't error
         logger_double = instance_double(SemanticLogger::Logger)
@@ -155,21 +156,21 @@ RSpec.describe MacRouterUtils::PFManager do
       end
 
       it 'warns but continues if PPP interface has no RUNNING flag' do
-        allow(ppp_manager).to receive(:execute_command_with_output).with("ifconfig ppp0").and_return({
-          success: true,
+        allow(ppp_manager).to receive(:execute_command_with_output).with('ifconfig ppp0').and_return({
+                                                                                                       success: true,
           stdout: <<~INTERFACE
             ppp0: flags=8050<POINTOPOINT,MULTICAST> mtu 1492
                 inet 100.66.91.122 --> 203.134.4.189 netmask 0xff000000
                 inet6 fe80::d211:e5ff:fe88:7787%ppp0 prefixlen 64 scopeid 0x19
                 nd6 options=201<PERFORMNUD,DAD>
           INTERFACE
-        })
+                                                                                                     })
 
         # Also mock ifconfig for LAN interface
-        allow(ppp_manager).to receive(:execute_command_with_output).with("ifconfig en5").and_return({
-          success: true,
-          stdout: "en5: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500"
-        })
+        allow(ppp_manager).to receive(:execute_command_with_output).with('ifconfig en5').and_return({
+                                                                                                      success: true,
+          stdout: 'en5: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500'
+                                                                                                    })
 
         # The method warns but doesn't error
         logger_double = instance_double(SemanticLogger::Logger)
@@ -187,22 +188,22 @@ RSpec.describe MacRouterUtils::PFManager do
       before do
         # Mock successful PF status check
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s info').and_return({
-          success: true,
+                                                                                                           success: true,
           stdout: "Status: Enabled\nSome other PF info..."
-        })
+                                                                                                         })
 
         # Mock NAT rules check with new implementation
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
-          success: true,
-          stdout: "nat on en0 from 192.168.1.0/24 to any -> (en0)"
-        })
+                                                                                                          success: true,
+          stdout: 'nat on en0 from 192.168.1.0/24 to any -> (en0)'
+                                                                                                        })
 
         # Mock the scrub rule check (MSS clamping)
         allow(pf_manager).to receive(:execute_command_with_output).with("sudo pfctl -sa | grep -i 'max-mss'").and_return({
-          success: true,
-          stdout: "scrub out on en0 proto tcp all max-mss 1452",
-          stderr: ""
-        })
+                                                                                                                           success: true,
+          stdout: 'scrub out on en0 proto tcp all max-mss 1440',
+          stderr: ''
+                                                                                                                         })
 
         # Since verify_running also calls the log when force mode is used
         allow(pf_manager).to receive(:logger).and_return(double('logger').as_null_object)
@@ -227,33 +228,33 @@ RSpec.describe MacRouterUtils::PFManager do
 
         # Step 1: PF is disabled initially
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s info').and_return({
-          success: true,
+                                                                                                           success: true,
           stdout: "Status: Disabled\nSome other PF info..."
-        })
+                                                                                                         })
 
         # Step 2: Enable PF
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -e').and_return({
-          success: true,
-          stdout: "pf enabled"
-        })
+                                                                                                      success: true,
+          stdout: 'pf enabled'
+                                                                                                    })
 
         # Step 3: Check NAT rules (empty)
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
-          success: true,
-          stdout: ""
-        })
+                                                                                                          success: true,
+          stdout: ''
+                                                                                                        })
 
         # Step 4: Check if Internet Sharing is enabled (it's not)
         allow(pf_manager).to receive(:execute_command_with_output).with('defaults read /Library/Preferences/SystemConfiguration/com.apple.nat | grep -i enabled').and_return({
-          success: true,
-          stdout: "Enabled = 0"
-        })
+                                                                                                                                                                               success: true,
+          stdout: 'Enabled = 0'
+                                                                                                                                                                             })
 
         # Step 5: Check IP forwarding (it's not enabled)
         allow(pf_manager).to receive(:execute_command_with_output).with('sysctl net.inet.ip.forwarding').and_return({
-          success: true,
-          stdout: "net.inet.ip.forwarding = 0"
-        })
+                                                                                                                      success: true,
+          stdout: 'net.inet.ip.forwarding = 0'
+                                                                                                                    })
       end
 
       it 'enables PF but returns false when NAT is not properly configured' do
@@ -269,27 +270,27 @@ RSpec.describe MacRouterUtils::PFManager do
       before do
         # Mock successful PF status check
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s info').and_return({
-          success: true,
+                                                                                                           success: true,
           stdout: "Status: Enabled\nSome other PF info..."
-        })
+                                                                                                         })
 
         # Mock NAT rules check - empty NAT rules
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
-          success: true,
-          stdout: ""
-        })
+                                                                                                          success: true,
+          stdout: ''
+                                                                                                        })
 
         # Mock NAT rules check with grep - also empty
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s all | grep nat').and_return({
-          success: true,
-          stdout: ""
-        })
+                                                                                                                     success: true,
+          stdout: ''
+                                                                                                                   })
 
         # Mock Internet Sharing check
         allow(pf_manager).to receive(:execute_command_with_output).with('defaults read /Library/Preferences/SystemConfiguration/com.apple.nat | grep -i enabled').and_return({
-          success: true,
-          stdout: "Enabled = 0"
-        })
+                                                                                                                                                                               success: true,
+          stdout: 'Enabled = 0'
+                                                                                                                                                                             })
 
         # For force mode check
         allow(pf_manager).to receive(:instance_variable_get).with(:@force).and_return(false)
@@ -299,9 +300,9 @@ RSpec.describe MacRouterUtils::PFManager do
 
         # For IP forwarding check
         allow(pf_manager).to receive(:execute_command_with_output).with('sysctl net.inet.ip.forwarding').and_return({
-          success: true,
-          stdout: "net.inet.ip.forwarding: 0"
-        })
+                                                                                                                      success: true,
+          stdout: 'net.inet.ip.forwarding: 0'
+                                                                                                                    })
       end
 
       it 'returns false if NAT is not configured and force mode is not enabled' do
@@ -361,39 +362,39 @@ RSpec.describe MacRouterUtils::PFManager do
 
   describe '#check_status' do
     context 'when PF is enabled with NAT configured' do
-      let(:pfctl_info_output) {
+      let(:pfctl_info_output) do
         <<~OUTPUT
-        Status: Enabled
-        Debug: Urgent
+          Status: Enabled
+          Debug: Urgent
         OUTPUT
-      }
+      end
 
-      let(:nat_rules_output) {
-        "nat on en0 from 192.168.1.0/24 to any -> (en0)"
-      }
+      let(:nat_rules_output) do
+        'nat on en0 from 192.168.1.0/24 to any -> (en0)'
+      end
 
       before do
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s info').and_return({
-          success: true,
+                                                                                                           success: true,
           stdout: pfctl_info_output
-        })
+                                                                                                         })
 
         # New implementation checks different commands
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
-          success: true,
+                                                                                                          success: true,
           stdout: nat_rules_output
-        })
+                                                                                                        })
 
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s all | grep nat').and_return({
-          success: true,
+                                                                                                                     success: true,
           stdout: nat_rules_output
-        })
+                                                                                                                   })
 
         # Mock Internet Sharing check
         allow(pf_manager).to receive(:execute_command_with_output).with('defaults read /Library/Preferences/SystemConfiguration/com.apple.nat | grep -i enabled').and_return({
-          success: true,
-          stdout: "Enabled = 0"
-        })
+                                                                                                                                                                               success: true,
+          stdout: 'Enabled = 0'
+                                                                                                                                                                             })
       end
 
       it 'returns correct status information' do
@@ -407,41 +408,41 @@ RSpec.describe MacRouterUtils::PFManager do
         expect(status[:managed_by_us]).to be true
       end
     end
-    
-    context 'when using older nat syntax' do
-      let(:pfctl_info_output) {
-        <<~OUTPUT
-        Status: Enabled
-        Debug: Urgent
-        OUTPUT
-      }
 
-      let(:nat_rules_output) {
-        "nat on en0 from 192.168.1.0/24 to any -> (en0)"
-      }
+    context 'when using older nat syntax' do
+      let(:pfctl_info_output) do
+        <<~OUTPUT
+          Status: Enabled
+          Debug: Urgent
+        OUTPUT
+      end
+
+      let(:nat_rules_output) do
+        'nat on en0 from 192.168.1.0/24 to any -> (en0)'
+      end
 
       before do
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s info').and_return({
-          success: true,
+                                                                                                           success: true,
           stdout: pfctl_info_output
-        })
+                                                                                                         })
 
         # New implementation checks these commands
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
-          success: true,
+                                                                                                          success: true,
           stdout: nat_rules_output
-        })
+                                                                                                        })
 
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s all | grep nat').and_return({
-          success: true,
+                                                                                                                     success: true,
           stdout: nat_rules_output
-        })
+                                                                                                                   })
 
         # Mock Internet Sharing check
         allow(pf_manager).to receive(:execute_command_with_output).with('defaults read /Library/Preferences/SystemConfiguration/com.apple.nat | grep -i enabled').and_return({
-          success: true,
-          stdout: "Enabled = 0"
-        })
+                                                                                                                                                                               success: true,
+          stdout: 'Enabled = 0'
+                                                                                                                                                                             })
       end
 
       it 'returns correct status information with old nat syntax' do
@@ -454,37 +455,37 @@ RSpec.describe MacRouterUtils::PFManager do
         expect(status[:managed_by_us]).to be true
       end
     end
-    
+
     context 'when PF is enabled but NAT is not configured' do
-      let(:pfctl_info_output) {
+      let(:pfctl_info_output) do
         <<~OUTPUT
-        Status: Enabled
-        Debug: Urgent
+          Status: Enabled
+          Debug: Urgent
         OUTPUT
-      }
+      end
 
       before do
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s info').and_return({
-          success: true,
+                                                                                                           success: true,
           stdout: pfctl_info_output
-        })
+                                                                                                         })
 
         # No NAT rules found
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s nat').and_return({
-          success: true,
-          stdout: ""
-        })
+                                                                                                          success: true,
+          stdout: ''
+                                                                                                        })
 
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s all | grep nat').and_return({
-          success: true,
-          stdout: ""
-        })
+                                                                                                                     success: true,
+          stdout: ''
+                                                                                                                   })
 
         # Internet Sharing is disabled
         allow(pf_manager).to receive(:execute_command_with_output).with('defaults read /Library/Preferences/SystemConfiguration/com.apple.nat | grep -i enabled').and_return({
-          success: true,
-          stdout: "Enabled = 0"
-        })
+                                                                                                                                                                               success: true,
+          stdout: 'Enabled = 0'
+                                                                                                                                                                             })
       end
 
       it 'returns status with NAT not configured' do
@@ -495,20 +496,20 @@ RSpec.describe MacRouterUtils::PFManager do
         expect(status[:interfaces]).to be_nil
       end
     end
-    
+
     context 'when PF is disabled' do
-      let(:pfctl_info_output) {
+      let(:pfctl_info_output) do
         <<~OUTPUT
-        Status: Disabled
-        DEBUG: Urgent
+          Status: Disabled
+          DEBUG: Urgent
         OUTPUT
-      }
+      end
 
       before do
         allow(pf_manager).to receive(:execute_command_with_output).with('sudo pfctl -s info').and_return({
-          success: true,
+                                                                                                           success: true,
           stdout: pfctl_info_output
-        })
+                                                                                                         })
       end
 
       it 'returns status with PF disabled' do

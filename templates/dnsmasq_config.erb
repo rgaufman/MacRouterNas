@@ -36,6 +36,10 @@ addn-hosts=/etc/hosts
 # Using a fixed path that won't change with directory structure
 conf-file=/opt/homebrew/etc/dnsmasq.blacklist
 
+# Load additional blacklist files from directory
+# This includes permanent blacklist and scheduled blacklist
+conf-dir=/opt/homebrew/etc/dnsmasq.d,*.blacklist
+
 # Set DNS server for DHCP clients to our router's IP
 # Option 6 is for DNS server
 dhcp-option=option:dns-server,<%= @ip %>
